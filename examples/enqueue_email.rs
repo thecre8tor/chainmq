@@ -1,4 +1,4 @@
-use rusque::{Job, JobContext, JobOptions, Priority, Queue, QueueOptions, Result, async_trait};
+use qeon::{Job, JobContext, JobOptions, Priority, Queue, QueueOptions, Result, async_trait};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]

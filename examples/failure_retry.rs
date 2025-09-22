@@ -1,4 +1,4 @@
-use rusque::{
+use qeon::{
     AppContext, Job, JobContext, JobOptions, JobRegistry, Result, WorkerBuilder, async_trait,
 };
 use serde::{Deserialize, Serialize};
@@ -51,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
     worker.start().await?;
 
     // Enqueue a job that fails twice, then succeeds. Backoff and attempts configured.
-    let queue = rusque::Queue::new(rusque::QueueOptions::default()).await?;
+    let queue = qeon::Queue::new(qeon::QueueOptions::default()).await?;
     let job = FlakyJob { fail_times: 2 };
     let opts = JobOptions {
         attempts: 3,

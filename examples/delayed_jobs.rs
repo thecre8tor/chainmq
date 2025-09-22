@@ -1,9 +1,14 @@
-use rusque::{async_trait, AppContext, Job, JobContext, JobOptions, JobRegistry, Priority, Queue, QueueOptions, Result, WorkerBuilder};
+use qeon::{
+    AppContext, Job, JobContext, JobOptions, JobRegistry, Priority, Queue, QueueOptions, Result,
+    WorkerBuilder, async_trait,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Serialize, Deserialize)]
-struct NotifyJob { user_id: String }
+struct NotifyJob {
+    user_id: String,
+}
 
 #[async_trait]
 impl Job for NotifyJob {
@@ -11,13 +16,21 @@ impl Job for NotifyJob {
         println!("[NotifyJob] notifying user_id={}", self.user_id);
         Ok(())
     }
-    fn name() -> &'static str { "NotifyJob" }
-    fn queue_name() -> &'static str { "default" }
+    fn name() -> &'static str {
+        "NotifyJob"
+    }
+    fn queue_name() -> &'static str {
+        "default"
+    }
 }
 
 #[derive(Clone, Default)]
 struct AppState;
-impl AppContext for AppState { fn clone_context(&self) -> Arc<dyn AppContext> { Arc::new(self.clone()) } }
+impl AppContext for AppState {
+    fn clone_context(&self) -> Arc<dyn AppContext> {
+        Arc::new(self.clone())
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -34,8 +47,14 @@ async fn main() -> anyhow::Result<()> {
     worker.start().await?;
 
     let queue = Queue::new(QueueOptions::default()).await?;
-    let job = NotifyJob { user_id: "u123".into() };
-    let opts = JobOptions { delay_secs: Some(5), priority: Priority::Normal, ..Default::default() };
+    let job = NotifyJob {
+        user_id: "u123".into(),
+    };
+    let opts = JobOptions {
+        delay_secs: Some(5),
+        priority: Priority::Normal,
+        ..Default::default()
+    };
     let id = queue.enqueue_with_options(job, opts).await?;
     println!("[NotifyJob] enqueued with 5s delay id={}", id);
 
@@ -43,5 +62,3 @@ async fn main() -> anyhow::Result<()> {
     worker.stop().await;
     Ok(())
 }
-
-

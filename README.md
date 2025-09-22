@@ -1,4 +1,4 @@
-# rusque ("Rusk")
+# qeon
 
 A Redis-backed, type-safe job queue for Rust. Provides job registration and execution, delayed jobs, retries with backoff, and scalable workers.
 
@@ -30,7 +30,7 @@ In your app's `Cargo.toml`:
 
 ```toml
 [dependencies]
-rusque = { version = "0.1.0" }
+qeon = { version = "0.1.0" }
 ```
 
 ## Quick start (library usage)
@@ -38,7 +38,7 @@ rusque = { version = "0.1.0" }
 Define a job type and run a worker in your application:
 
 ```rust
-use rusque::{async_trait, Job, JobContext, JobRegistry, WorkerBuilder, Result, AppContext};
+use qeon::{async_trait, Job, JobContext, JobRegistry, WorkerBuilder, Result, AppContext};
 use serde::{Serialize, Deserialize};
 use std::sync::Arc;
 
@@ -74,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
 
     worker.start().await?;
     // enqueue from somewhere else in your app:
-    // let queue = rusque::Queue::new(rusque::QueueOptions::default()).await?;
+    // let queue = qeon::Queue::new(qeon::QueueOptions::default()).await?;
     // queue.enqueue(Hello).await?;
 
     tokio::signal::ctrl_c().await?;

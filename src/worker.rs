@@ -1,5 +1,5 @@
 // src/worker.rs
-use crate::{AppContext, JobContext, JobId, JobRegistry, Queue, QueueOptions, Result, RusqueError};
+use crate::{AppContext, JobContext, JobId, JobRegistry, QeonError, Queue, QueueOptions, Result};
 use std::sync::Arc;
 use tokio::{
     sync::Semaphore,
@@ -72,7 +72,7 @@ impl WorkerBuilder {
     pub async fn spawn(self) -> Result<Worker> {
         let app_context = self
             .app_context
-            .ok_or_else(|| RusqueError::Worker("App context is required".to_string()))?;
+            .ok_or_else(|| QeonError::Worker("App context is required".to_string()))?;
 
         Worker::new(self.config, self.registry, app_context).await
     }
@@ -256,7 +256,7 @@ impl Worker {
             Some(metadata) => metadata,
             None => {
                 error!("Job {} not found", job_id);
-                return Err(RusqueError::JobNotFound(job_id));
+                return Err(QeonError::JobNotFound(job_id));
             }
         };
 
