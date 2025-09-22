@@ -1,10 +1,14 @@
-use rustque::{async_trait, AppContext, Job, JobContext, JobOptions, JobRegistry, Result, WorkerBuilder};
+use rusque::{
+    AppContext, Job, JobContext, JobOptions, JobRegistry, Result, WorkerBuilder, async_trait,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 #[derive(Serialize, Deserialize)]
-struct FlakyJob { fail_times: u32 }
+struct FlakyJob {
+    fail_times: u32,
+}
 
 #[async_trait]
 impl Job for FlakyJob {
@@ -18,12 +22,18 @@ impl Job for FlakyJob {
             Ok(())
         }
     }
-    fn name() -> &'static str { "FlakyJob" }
+    fn name() -> &'static str {
+        "FlakyJob"
+    }
 }
 
 #[derive(Clone, Default)]
 struct AppState;
-impl AppContext for AppState { fn clone_context(&self) -> Arc<dyn AppContext> { Arc::new(self.clone()) } }
+impl AppContext for AppState {
+    fn clone_context(&self) -> Arc<dyn AppContext> {
+        Arc::new(self.clone())
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -41,9 +51,12 @@ async fn main() -> anyhow::Result<()> {
     worker.start().await?;
 
     // Enqueue a job that fails twice, then succeeds. Backoff and attempts configured.
-    let queue = rustque::Queue::new(rustque::QueueOptions::default()).await?;
+    let queue = rusque::Queue::new(rusque::QueueOptions::default()).await?;
     let job = FlakyJob { fail_times: 2 };
-    let opts = JobOptions { attempts: 3, ..Default::default() };
+    let opts = JobOptions {
+        attempts: 3,
+        ..Default::default()
+    };
     let id = queue.enqueue_with_options(job, opts).await?;
     println!("[FlakyJob] enqueued id={}", id);
 
@@ -51,5 +64,3 @@ async fn main() -> anyhow::Result<()> {
     worker.stop().await;
     Ok(())
 }
-
-

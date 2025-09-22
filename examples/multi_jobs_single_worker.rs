@@ -1,4 +1,4 @@
-use rustque::{AppContext, Job, JobContext, JobRegistry, Result, WorkerBuilder, async_trait};
+use rusque::{AppContext, Job, JobContext, JobRegistry, Result, WorkerBuilder, async_trait};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

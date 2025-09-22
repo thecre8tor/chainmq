@@ -1,12 +1,12 @@
 [package]
-name = "rustque"
+name = "rusque"
 version = "0.1.0"
 edition = "2024"
 authors = ["Alexander Nitiola <cre8tor.alexander@gmail.com>"]
 description = "A Redis-backed, type-safe job queue for Rust. Provides job registration and execution, delayed jobs, retries with backoff, and scalable workers."
 license = "MIT"
-repository = "https://github.com/thecre8tor/rustque"
-documentation = "https://docs.rs/rustque"
+repository = "https://github.com/thecre8tor/rusque"
+documentation = "https://docs.rs/rusque"
 keywords = ["message-queue", "redis-queue", "bullmq", "bull-queue", "queue"]
 categories = ["web-programming", "data-structures", "message queue", "redis queue"]
 

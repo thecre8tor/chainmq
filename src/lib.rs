@@ -1,5 +1,5 @@
 // src/lib.rs
-//! rustque: A Redis-backed job queue for Rust
+//! rusque (Rusk): A Redis-backed job queue for Rust
 //!
 //! Inspired by BullMQ, this crate provides type-safe job queues with
 //! Redis persistence, delayed execution, retries, and monitoring.
@@ -15,7 +15,7 @@ pub mod worker;
 
 pub use backoff::{Backoff, BackoffStrategy};
 pub use context::{AppContext, JobContext};
-pub use error::{Result, RustqueError};
+pub use error::{Result, RusqueError};
 pub use job::JobMetadata;
 pub use job::{Job, JobId, JobOptions, JobState, Priority};
 pub use queue::{Queue, QueueOptions};

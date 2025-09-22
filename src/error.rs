@@ -2,7 +2,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum RustqueError {
+pub enum RusqueError {
     #[error("Redis error: {0}")]
     Redis(#[from] redis::RedisError),
 
@@ -31,4 +31,4 @@ pub enum RustqueError {
     Timeout,
 }
 
-pub type Result<T> = std::result::Result<T, RustqueError>;
+pub type Result<T> = std::result::Result<T, RusqueError>;
