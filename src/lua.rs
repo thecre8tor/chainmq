@@ -15,6 +15,8 @@ impl LuaScripts {
         let rate_limit = Script::new(include_str!("./lua/rate_limit.lua"));
 
         // Prepare invocations (optional hinting; no preloading required)
+        // move_delayed.load(&mut client.get_connection()?)?;
+
         move_delayed.prepare_invoke();
         claim_job.prepare_invoke();
         rate_limit.prepare_invoke();

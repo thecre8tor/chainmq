@@ -1,7 +1,7 @@
 // src/queue.rs
-use crate::{Job, JobId, JobMetadata, JobOptions, JobState, Result, RsBullError, lua::LuaScripts};
+use crate::{Job, JobId, JobMetadata, JobOptions, JobState, Result, RustqueError, lua::LuaScripts};
 use chrono::Utc;
-use redis::{Client as RedisClient, Commands};
+use redis::{Client as RedisClient, Commands, aio::MultiplexedConnection};
 use serde_json;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -114,6 +114,13 @@ impl Queue {
         }
     }
 
+    async fn get_async_connection(&self) -> Result<MultiplexedConnection> {
+        self.client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(RustqueError::Redis)
+    }
+
     /// Move delayed jobs to waiting queue
     pub async fn process_delayed(&self, queue_name: &str) -> Result<usize> {
         let now = SystemTime::now()
@@ -127,7 +134,7 @@ impl Queue {
             .move_delayed
             .arg(queue_name)
             .arg(now)
-            .invoke_async(&mut self.client.get_async_connection().await?)
+            .invoke_async(&mut self.get_async_connection().await?)
             .await?;
 
         Ok(result as usize)
@@ -146,7 +153,7 @@ impl Queue {
             .key(&active_key)
             .arg(worker_id)
             .arg(now)
-            .invoke_async(&mut self.client.get_async_connection().await?)
+            .invoke_async(&mut self.get_async_connection().await?)
             .await?;
 
         match result {
@@ -154,7 +161,7 @@ impl Queue {
                 let job_id = JobId(
                     job_id_str
                         .parse()
-                        .map_err(|_| RsBullError::Worker("Invalid job ID format".to_string()))?,
+                        .map_err(|_| RustqueError::Worker("Invalid job ID format".to_string()))?,
                 );
                 Ok(Some(job_id))
             }

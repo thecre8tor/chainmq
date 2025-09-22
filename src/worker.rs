@@ -1,6 +1,6 @@
 // src/worker.rs
 use crate::{
-    AppContext, JobContext, JobId, JobRegistry, Queue, QueueOptions, Result, RsBullError,
+    AppContext, JobContext, JobId, JobRegistry, Queue, QueueOptions, Result, RustqueError,
 };
 use std::sync::Arc;
 use tokio::{
@@ -74,7 +74,7 @@ impl WorkerBuilder {
     pub async fn spawn(self) -> Result<Worker> {
         let app_context = self
             .app_context
-            .ok_or_else(|| RsBullError::Worker("App context is required".to_string()))?;
+            .ok_or_else(|| RustqueError::Worker("App context is required".to_string()))?;
 
         Worker::new(self.config, self.registry, app_context).await
     }
@@ -258,7 +258,7 @@ impl Worker {
             Some(metadata) => metadata,
             None => {
                 error!("Job {} not found", job_id);
-                return Err(RsBullError::JobNotFound(job_id));
+                return Err(RustqueError::JobNotFound(job_id));
             }
         };
 

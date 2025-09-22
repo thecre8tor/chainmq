@@ -15,7 +15,7 @@ pub mod worker;
 
 pub use backoff::{Backoff, BackoffStrategy};
 pub use context::{AppContext, JobContext};
-pub use error::{Result, RsBullError};
+pub use error::{Result, RustqueError};
 pub use job::JobMetadata;
 pub use job::{Job, JobId, JobOptions, JobState, Priority};
 pub use queue::{Queue, QueueOptions};

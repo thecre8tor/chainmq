@@ -1,5 +1,5 @@
 // src/registry.rs
-use crate::{Job, JobContext, Result, RsBullError};
+use crate::{Job, JobContext, Result, RustqueError};
 use std::any::TypeId;
 use std::collections::HashMap;
 
@@ -38,7 +38,7 @@ impl JobRegistry {
         let executor = self
             .jobs
             .get(name)
-            .ok_or_else(|| RsBullError::Registry(format!("Job type '{}' not registered", name)))?;
+            .ok_or_else(|| RustqueError::Registry(format!("Job type '{}' not registered", name)))?;
 
         executor.execute(payload, ctx).await
     }
