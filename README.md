@@ -1,4 +1,4 @@
-# qeon
+# Qeon
 
 A Redis-backed, type-safe job queue for Rust. Provides job registration and execution, delayed jobs, retries with backoff, and scalable workers.
 
