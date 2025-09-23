@@ -1,6 +1,6 @@
 [package]
 name = "chainmq"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["Alexander Nitiola <cre8tor.alexander@gmail.com>"]
 description = "A Redis-backed, type-safe job queue for Rust. Provides job registration and execution, delayed jobs, retries with backoff, and scalable workers."
