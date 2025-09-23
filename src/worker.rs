@@ -2,6 +2,7 @@
 use crate::{
     AppContext, ChainMQError, JobContext, JobId, JobRegistry, Queue, QueueOptions, Result,
 };
+use redis::Client;
 use std::sync::Arc;
 use tokio::{
     sync::Semaphore,
@@ -40,9 +41,20 @@ pub struct WorkerBuilder {
 }
 
 impl WorkerBuilder {
-    pub fn new(redis_url: impl Into<String>, registry: JobRegistry) -> Self {
+    pub fn new_with_redis_uri(redis_url: impl Into<String>, registry: JobRegistry) -> Self {
         let mut config = WorkerConfig::default();
         config.queue_options.redis_url = redis_url.into();
+
+        Self {
+            config,
+            registry,
+            app_context: None,
+        }
+    }
+
+    pub fn new_with_redis_instance(redis_client: Client, registry: JobRegistry) -> Self {
+        let mut config = WorkerConfig::default();
+        config.queue_options.redis_instance = Some(redis_client);
 
         Self {
             config,

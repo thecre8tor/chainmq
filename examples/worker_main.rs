@@ -1,4 +1,5 @@
 use chainmq::{AppContext, Job, JobContext, JobRegistry, Result, WorkerBuilder, async_trait};
+use redis::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -79,7 +80,16 @@ async fn main() -> anyhow::Result<()> {
         concurrency,
         EmailJob::queue_name()
     );
-    let mut worker = WorkerBuilder::new(redis_url, registry)
+    // let mut worker = WorkerBuilder::new_with_redis_uri(redis_url, registry)
+    //     .with_app_context(app_state)
+    //     .with_concurrency(concurrency)
+    //     .with_queue_name(EmailJob::queue_name())
+    //     .spawn()
+    //     .await?;
+
+    let client = Client::open(redis_url)?;
+
+    let mut worker = WorkerBuilder::new_with_redis_instance(client, registry)
         .with_app_context(app_state)
         .with_concurrency(concurrency)
         .with_queue_name(EmailJob::queue_name())

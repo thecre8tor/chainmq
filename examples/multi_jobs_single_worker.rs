@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
     registry.register::<EmailJob>();
     registry.register::<ReportJob>();
 
-    let mut worker = WorkerBuilder::new(
+    let mut worker = WorkerBuilder::new_with_redis_uri(
         option_env!("REDIS_URL").unwrap_or("redis://localhost:6379"),
         registry,
     )

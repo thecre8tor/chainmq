@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct QueueOptions {
     pub name: String,
     pub redis_url: String,
+    pub redis_instance: Option<RedisClient>,
     pub key_prefix: String,
     pub default_concurrency: usize,
     pub max_stalled_interval: u64,
@@ -20,6 +21,7 @@ impl Default for QueueOptions {
         Self {
             name: "default".to_string(),
             redis_url: "redis://127.0.0.1:6379".to_string(),
+            redis_instance: None,
             key_prefix: "rbq".to_string(),
             default_concurrency: 10,
             max_stalled_interval: 30000, // 30 seconds
@@ -36,7 +38,11 @@ pub struct Queue {
 
 impl Queue {
     pub async fn new(options: QueueOptions) -> Result<Self> {
-        let client = RedisClient::open(options.redis_url.as_str())?;
+        let client = match options.clone().redis_instance {
+            Some(client) => client,
+            None => RedisClient::open(options.redis_url.as_str())?,
+        };
+
         let scripts = LuaScripts::new(&client).await?;
 
         Ok(Self {

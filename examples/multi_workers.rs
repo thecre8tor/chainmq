@@ -59,14 +59,14 @@ async fn main() -> anyhow::Result<()> {
 
     let redis = option_env!("REDIS_URL").unwrap_or("redis://localhost:6379");
 
-    let mut w_emails = WorkerBuilder::new(redis, reg_emails)
+    let mut w_emails = WorkerBuilder::new_with_redis_uri(redis, reg_emails)
         .with_app_context(app.clone())
         .with_queue_name("emails")
         .with_concurrency(3)
         .spawn()
         .await?;
 
-    let mut w_reports = WorkerBuilder::new(redis, reg_reports)
+    let mut w_reports = WorkerBuilder::new_with_redis_uri(redis, reg_reports)
         .with_app_context(app)
         .with_queue_name("reports")
         .with_concurrency(2)
