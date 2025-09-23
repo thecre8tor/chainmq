@@ -133,7 +133,7 @@ Notes:
 
 - You can enqueue before or after workers start. Jobs persist in Redis until claimed.
 - Ensure both worker and enqueuer use the same Redis URL and queue name.
-- Some examples default to `redis://localhost:6370`. Adjust to your setup.
+- Some examples default to `redis://localhost:6379`. Adjust to your setup.
 
 ## Core concepts
 

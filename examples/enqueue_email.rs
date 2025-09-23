@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::try_init().ok();
     println!("[enqueue] Preparing QueueOptions and connecting to Redis...");
     let options = QueueOptions {
-        redis_url: "redis://localhost:6370".to_string(),
+        redis_url: "redis://localhost:6379".to_string(),
         ..Default::default()
     };
     let queue = Queue::new(options).await?;

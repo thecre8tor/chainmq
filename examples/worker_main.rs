@@ -71,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
         EmailJob::queue_name()
     );
 
-    let redis_url = "redis://localhost:6370";
+    let redis_url = "redis://localhost:6379";
     let concurrency = 5usize;
     println!(
         "[boot] Spawning worker → redis='{}' concurrency={} queue='{}'",
