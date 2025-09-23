@@ -1,4 +1,4 @@
-use qeon::{
+use chainmq::{
     AppContext, Job, JobContext, JobOptions, JobRegistry, Priority, Queue, QueueOptions, Result,
     WorkerBuilder, async_trait,
 };

@@ -1,14 +1,14 @@
 [package]
-name = "qeon"
+name = "chainmq"
 version = "0.1.0"
 edition = "2024"
 authors = ["Alexander Nitiola <cre8tor.alexander@gmail.com>"]
 description = "A Redis-backed, type-safe job queue for Rust. Provides job registration and execution, delayed jobs, retries with backoff, and scalable workers."
 license = "MIT"
-repository = "https://github.com/thecre8tor/qeon"
-documentation = "https://docs.rs/qeon"
-keywords = ["message-queue", "redis-queue", "bullmq", "bull-queue", "queue"]
-categories = ["web-programming", "data-structures", "message queue", "redis queue"]
+repository = "https://github.com/thecre8tor/chainmq"
+documentation = "https://docs.rs/chainmq"
+keywords = ["queue", "jobs", "bullmq", "redis", "workers"]
+categories = ["web-programming", "data-structures", "message-queue", "redis-queue"]
 
 
 [dependencies]
@@ -26,6 +26,7 @@ dashmap = "6.1"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 parking_lot = "0.12"
+bullrs = "0.0.1"
 
 [dev-dependencies]
 tokio-test = "0.4"

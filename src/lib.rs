@@ -1,5 +1,5 @@
 // src/lib.rs
-//! Qeon: A Redis-backed job queue for Rust
+//! ChainMQ: A Redis-backed job queue for Rust
 //!
 //! Inspired by BullMQ, this crate provides type-safe job queues with
 //! Redis persistence, delayed execution, retries, and monitoring.
@@ -15,7 +15,7 @@ pub mod worker;
 
 pub use backoff::{Backoff, BackoffStrategy};
 pub use context::{AppContext, JobContext};
-pub use error::{QeonError, Result};
+pub use error::{ChainMQError, Result};
 pub use job::JobMetadata;
 pub use job::{Job, JobId, JobOptions, JobState, Priority};
 pub use queue::{Queue, QueueOptions};

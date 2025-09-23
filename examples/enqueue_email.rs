@@ -1,4 +1,4 @@
-use qeon::{Job, JobContext, JobOptions, Priority, Queue, QueueOptions, Result, async_trait};
+use chainmq::{Job, JobContext, JobOptions, Priority, Queue, QueueOptions, Result, async_trait};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]

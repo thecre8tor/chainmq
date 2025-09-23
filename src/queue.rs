@@ -1,5 +1,5 @@
 // src/queue.rs
-use crate::{Job, JobId, JobMetadata, JobOptions, JobState, QeonError, Result, lua::LuaScripts};
+use crate::{ChainMQError, Job, JobId, JobMetadata, JobOptions, JobState, Result, lua::LuaScripts};
 use chrono::Utc;
 use redis::{Client as RedisClient, Commands, aio::MultiplexedConnection};
 use serde_json;
@@ -118,7 +118,7 @@ impl Queue {
         self.client
             .get_multiplexed_async_connection()
             .await
-            .map_err(QeonError::Redis)
+            .map_err(ChainMQError::Redis)
     }
 
     /// Move delayed jobs to waiting queue
@@ -161,7 +161,7 @@ impl Queue {
                 let job_id = JobId(
                     job_id_str
                         .parse()
-                        .map_err(|_| QeonError::Worker("Invalid job ID format".to_string()))?,
+                        .map_err(|_| ChainMQError::Worker("Invalid job ID format".to_string()))?,
                 );
                 Ok(Some(job_id))
             }

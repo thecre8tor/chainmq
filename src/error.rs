@@ -2,7 +2,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum QeonError {
+pub enum ChainMQError {
     #[error("Redis error: {0}")]
     Redis(#[from] redis::RedisError),
 
@@ -31,4 +31,4 @@ pub enum QeonError {
     Timeout,
 }
 
-pub type Result<T> = std::result::Result<T, QeonError>;
+pub type Result<T> = std::result::Result<T, ChainMQError>;

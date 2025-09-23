@@ -1,4 +1,4 @@
-use qeon::{AppContext, Job, JobContext, JobRegistry, Result, WorkerBuilder, async_trait};
+use chainmq::{AppContext, Job, JobContext, JobRegistry, Result, WorkerBuilder, async_trait};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
