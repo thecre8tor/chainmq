@@ -224,7 +224,7 @@ impl Job for MyJob {
 
 ## License
 
-MIT (or your chosen license)
+MIT
 
 ## Acknowledgements
 
