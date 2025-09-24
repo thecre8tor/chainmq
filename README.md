@@ -6,80 +6,196 @@ This crate is library-first. Runnable examples demonstrate typical patterns (sin
 
 ## Features
 
-- Type-safe jobs with `serde` payloads
-- Redis-backed persistence (wait/active/delayed/failed)
-- Delayed jobs via Lua atomics
-- Retries with pluggable backoff strategies
-- Scalable workers with configurable concurrency
-- Simple registration and execution model
+- 🚀 Redis-Powered: Built on Redis for reliable job persistence and distribution
+- 🔄 Background Jobs: Process jobs asynchronously in the background
+- 🏗️ Job Registry: Simple Type-safe job registration and execution
+- 🔧 Worker Management: Configurable workers with lifecycle management
+- ⚡ Async/Await: Full async support throughout the system
+- ⏰ Delayed jobs: Schedule jobs for future execution with atomic operations
+- 🗄️ Backoff strategies: Configurable retry logic for failed jobs
+- 📊 Application Context: Share application state across jobs
 
-## Requirements
+## Quick Start:
 
-- Rust (stable)
-- Redis server (local or remote)
-
-Start Redis locally (examples default to localhost):
-
-```bash
-redis-server
-```
-
-## Install (use in another crate)
-
-In your app's `Cargo.toml`:
+Add ChainMQ to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-chainmq = { version = "0.1.0" }
+chainmq = "0.2.0"
+actix-web = "4.0"
+redis = "0.23"
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
 ```
 
-## Quick start (library usage)
+## Basic Usage:
 
-Define a job type and run a worker in your application:
+### 1. Define Your Job
 
 ```rust
-use chainmq::{async_trait, Job, JobContext, JobRegistry, WorkerBuilder, Result, AppContext};
-use serde::{Serialize, Deserialize};
+use chainmq::{Job, AppContext};
+use serde::{Deserialize, Serialize};
+use async_trait::async_trait;
 use std::sync::Arc;
 
-#[derive(Serialize, Deserialize)]
-struct Hello;
-
-#[async_trait]
-impl Job for Hello {
-    async fn perform(&self, _ctx: &JobContext) -> Result<()> {
-        println!("hello from job");
-        Ok(())
-    }
-    fn name() -> &'static str { "Hello" }
-    fn queue_name() -> &'static str { "default" }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailJob {
+    pub to: String,
+    pub subject: String,
+    pub body: String,
 }
 
-#[derive(Clone, Default)]
-struct AppState;
-impl AppContext for AppState { fn clone_context(&self) -> Arc<dyn AppContext> { Arc::new(self.clone()) } }
+#[async_trait]
+impl Job for EmailJob {
+    async fn perform(&self, ctx: &JobContext) -> chainmq::Result<()> {
+        if let Some(app_ctx) = ctx.app::<AppState>() {
+            let response = app_ctx
+                .mail_client
+                .send_email(
+                    &self.sender_name,
+                    &self.to,
+                    &self.subject,
+                    &self.html_body,
+                    &self.text_body,
+                    &self.category,
+                )
+                .await;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let app = Arc::new(AppState::default());
+            if let Err(error) = response {
+                println!("Unable to send OTP to user: {}", error)
+            } else {
+                println!("Successfully sent the email: {:#?}", response.ok())
+            }
+        }
+
+        Result::Ok(())
+    }
+
+    fn name() -> &'static str {
+        "EmailJob"
+    }
+
+    fn queue_name() -> &'static str {
+        "emails"
+    }
+}
+```
+
+### 2. Set Up Application Context
+
+```rust
+use chainmq::AppContext;
+use std::sync::Arc;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub mail_client: Arc<MailClient>,
+    // pub database: Arc<DatabasePool>,
+    // You can also add other application services that your jobs depends on.
+}
+
+impl AppContext for AppState {
+    fn clone_context(&self) -> Arc<dyn AppContext> {
+        Arc::new(self.clone())
+    }
+}
+```
+
+### 3. Configure Workers and Web Server
+
+```rust
+use chainmq::{JobRegistry, WorkerBuilder};
+use actix_web::{web::Data, App, HttpServer};
+use redis::Client as RedisClient;
+use tokio::sync::broadcast;
+
+async fn setup_application() -> Result<(), anyhow::Error> {
+    // Initialize Redis connection
+    let redis_client = RedisClient::open("redis://127.0.0.1/")?;
+
+    // Create application state
+    let app_state = Arc::new(AppState {
+        mail_client: Arc::new(MailClient::new()),
+        redis_client: Arc::new(redis_client),
+        // database: Arc::new(DatabasePool::new().await?),
+    });
+
+    // Set up job registry
     let mut registry = JobRegistry::new();
-    registry.register::<Hello>();
+    registry.register::<EmailJob>();
 
-    let mut worker = WorkerBuilder::new("redis://localhost:6379", registry)
-        .with_app_context(app)
-        .with_queue_name("default")
-        .with_concurrency(5)
-        .spawn()
-        .await?;
+    // Create shutdown channel
+    let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
 
-    worker.start().await?;
-    // enqueue from somewhere else in your app:
-    // let queue = chainmq::Queue::new(chainmq::QueueOptions::default()).await?;
-    // queue.enqueue(Hello).await?;
+    // Start background workers
+    tokio::spawn(async move {
+        let mut worker = WorkerBuilder::new_with_redis_instance(redis_client.clone(), registry)
+            .with_app_context(app_state.clone())
+            .with_queue_name(EmailJob::queue_name())
+            .spawn()
+            .await
+            .expect("Failed to initialize workers");
 
-    tokio::signal::ctrl_c().await?;
-    worker.stop().await;
+        tokio::select! {
+            result = worker.start() => {
+                if let Err(e) = result {
+                    tracing::error!("Worker failed: {:?}", e);
+                }
+            }
+            _ = shutdown_rx.recv() => {
+                tracing::info!("Shutting down worker...");
+                worker.stop().await;
+            }
+        }
+    });
+
+    // Start web server
+    HttpServer::new(move || {
+        App::new()
+            .app_data(Data::new(app_state.clone()))
+            .service(your_routes)
+    })
+    .bind("127.0.0.1:8000")?
+    .run()
+    .await?;
+
     Ok(())
+}
+```
+
+### 4. Enqueue Jobs from Your Handlers
+
+```rust
+use actix_web::{web, HttpResponse, Result};
+
+async fn send_welcome_email(
+    app_state: web::Data<AppState>
+) -> Result<HttpResponse> {
+    let email_job = EmailJob {
+        to: "user@example.com".to_string(),
+        subject: "Welcome!".to_string(),
+        body: "Thank you for signing up!".to_string(),
+    };
+
+    let options = QueueOptions {
+        redis_instance: Some(app_state.redis_client),
+        ..Default::default()
+    };
+
+    let queue = Queue::new(options)
+        .await
+        .expect("Unable to initialize queue");
+
+    // Enqueue the job
+    let job_response = queue.enqueue(job).await;
+
+    if let Err(error) = job_response {
+       tracing::error!("Failed to enqueue email verification: {}", error);
+    } else {
+       tracing::info!("Enqueued email verification for {}", response.email);
+    };
+
+    Ok(HttpResponse::Ok().json("Welcome email queued"))
 }
 ```
 
@@ -167,7 +283,7 @@ Pass it to the worker:
 
 ```rust
 let app = Arc::new(AppState { db: pool, http: reqwest::Client::new() });
-let mut worker = WorkerBuilder::new("redis://localhost:6379", registry)
+let mut worker = WorkerBuilder::new_with_redis_uri("redis://localhost:6379", registry)
     .with_app_context(app)
     .with_queue_name("default")
     .spawn()
