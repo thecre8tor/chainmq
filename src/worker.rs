@@ -85,6 +85,11 @@ impl WorkerBuilder {
         self
     }
 
+    pub fn with_shutdown_timeout(mut self, timeout: Duration) -> Self {
+        self.config.shutdown_timeout = timeout;
+        self
+    }
+
     pub async fn spawn(self) -> Result<Worker> {
         let app_context = self
             .app_context
