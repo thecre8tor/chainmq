@@ -5,11 +5,11 @@ use crate::{
 use redis::Client;
 use std::sync::Arc;
 use tokio::{
-    sync::Semaphore,
+    sync::{Semaphore, broadcast},
     task::JoinHandle,
-    time::{Duration, interval},
+    time::{Duration, interval, timeout},
 };
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, warn};
 
 /// Worker configuration
 #[derive(Debug, Clone)]
@@ -19,6 +19,7 @@ pub struct WorkerConfig {
     pub poll_interval: Duration,
     pub stalled_job_check_interval: Duration,
     pub worker_id: String,
+    pub shutdown_timeout: Duration,
 }
 
 impl Default for WorkerConfig {
@@ -29,6 +30,7 @@ impl Default for WorkerConfig {
             poll_interval: Duration::from_millis(100),
             stalled_job_check_interval: Duration::from_secs(30),
             worker_id: format!("worker-{}", uuid::Uuid::new_v4()),
+            shutdown_timeout: Duration::from_secs(30),
         }
     }
 }
