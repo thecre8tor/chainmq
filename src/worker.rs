@@ -283,6 +283,14 @@ impl Worker {
         let _ = self.shutdown_tx.send(());
     }
 
+    /// Force immediate shutdown (emergency only)
+    pub async fn force_stop(&mut self) {
+        self.is_shutting_down.store(true, Ordering::SeqCst);
+        for handle in self.handles.drain(..) {
+            handle.abort();
+        }
+    }
+
     async fn spawn_worker_loop(&self) -> JoinHandle<()> {
         let queue = Arc::clone(&self.queue);
         let registry = Arc::clone(&self.registry);
