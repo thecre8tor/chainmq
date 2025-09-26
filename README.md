@@ -51,24 +51,16 @@ impl Job for EmailJob {
         if let Some(app_ctx) = ctx.app::<AppState>() {
             let response = app_ctx
                 .mail_client
-                .send_email(
-                    &self.sender_name,
-                    &self.to,
-                    &self.subject,
-                    &self.html_body,
-                    &self.text_body,
-                    &self.category,
-                )
+                .send_email(&self.to, &self.subject, &self.body)
                 .await;
 
-            if let Err(error) = response {
-                println!("Unable to send OTP to user: {}", error)
-            } else {
-                println!("Successfully sent the email: {:#?}", response.ok())
+            match response {
+                Ok(result) => println!("Email sent successfully: {:#?}", result),
+                Err(error) => println!("Failed to send email: {}", error),
             }
         }
 
-        Result::Ok(())
+        Ok(())
     }
 
     fn name() -> &'static str {
@@ -90,8 +82,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct AppState {
     pub mail_client: Arc<MailClient>,
-    // pub database: Arc<DatabasePool>,
-    // You can also add other application services that your jobs depends on.
+    pub redis_client: Arc<redis::Client>,
 }
 
 impl AppContext for AppState {
@@ -101,7 +92,7 @@ impl AppContext for AppState {
 }
 ```
 
-### 3. Configure Workers and Web Server
+### 3. Configure Workers and Your Preffered Web Server
 
 ```rust
 use chainmq::{JobRegistry, WorkerBuilder};
@@ -116,16 +107,13 @@ async fn setup_application() -> Result<(), anyhow::Error> {
     // Create application state
     let app_state = Arc::new(AppState {
         mail_client: Arc::new(MailClient::new()),
-        redis_client: Arc::new(redis_client),
-        // database: Arc::new(DatabasePool::new().await?),
+        redis_client: Arc::new(redis_client.clone()),
     });
 
     // Set up job registry
     let mut registry = JobRegistry::new();
     registry.register::<EmailJob>();
 
-    // Create shutdown channel
-    let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
 
     // Start background workers
     tokio::spawn(async move {
@@ -136,17 +124,7 @@ async fn setup_application() -> Result<(), anyhow::Error> {
             .await
             .expect("Failed to initialize workers");
 
-        tokio::select! {
-            result = worker.start() => {
-                if let Err(e) = result {
-                    tracing::error!("Worker failed: {:?}", e);
-                }
-            }
-            _ = shutdown_rx.recv() => {
-                tracing::info!("Shutting down worker...");
-                worker.stop().await;
-            }
-        }
+        let _ = worker.start().await;
     });
 
     // Start web server
@@ -163,14 +141,12 @@ async fn setup_application() -> Result<(), anyhow::Error> {
 }
 ```
 
-### 4. Enqueue Jobs from Your Handlers
+### 4. Enqueue Jobs from Anywhere
 
 ```rust
-use actix_web::{web, HttpResponse, Result};
+use chainmq::{Queue, QueueOptions};
 
-async fn send_welcome_email(
-    app_state: web::Data<AppState>
-) -> Result<HttpResponse> {
+async fn enqueue_email_job(app_state: &AppState) -> chainmq::Result<()> {
     let email_job = EmailJob {
         to: "user@example.com".to_string(),
         subject: "Welcome!".to_string(),
@@ -178,24 +154,19 @@ async fn send_welcome_email(
     };
 
     let options = QueueOptions {
-        redis_instance: Some(app_state.redis_client),
+        redis_instance: Some(app_state.redis_client.clone()),
         ..Default::default()
     };
 
-    let queue = Queue::new(options)
-        .await
-        .expect("Unable to initialize queue");
+    let queue = Queue::new(options).await?;
 
     // Enqueue the job
-    let job_response = queue.enqueue(job).await;
+    match queue.enqueue(email_job).await {
+        Ok(_) => println!("Email job enqueued successfully"),
+        Err(error) => eprintln!("Failed to enqueue email job: {}", error),
+    }
 
-    if let Err(error) = job_response {
-       tracing::error!("Failed to enqueue email verification: {}", error);
-    } else {
-       tracing::info!("Enqueued email verification for {}", response.email);
-    };
-
-    Ok(HttpResponse::Ok().json("Welcome email queued"))
+    Ok(())
 }
 ```
 
@@ -207,56 +178,232 @@ This repo provides runnable examples. Build them all:
 cargo build --examples
 ```
 
-Run Redis first, then in separate terminals run workers/enqueuers.
-
-- Single worker for emails queue:
+Run Redis first, then in separate terminals run workers/enqueuers:
 
 ```bash
+# Single worker for emails queue
 cargo run --example worker_main
-```
 
-- Enqueue email jobs (normal + delayed/high priority):
-
-```bash
+# Enqueue email jobs (normal + delayed/high priority)
 cargo run --example enqueue_email
-```
 
-- One worker handling multiple job types on a single queue:
-
-```bash
+# One worker handling multiple job types on a single queue
 cargo run --example multi_jobs_single_worker
-```
 
-- Two workers on different queues (emails + reports):
-
-```bash
+# Two workers on different queues (emails + reports)
 cargo run --example multi_workers
-```
 
-- Failure and retry with backoff demonstration:
-
-```bash
+# Failure and retry with backoff demonstration
 cargo run --example failure_retry
-```
 
-- Delayed jobs demonstration:
-
-```bash
+# Delayed jobs demonstration
 cargo run --example delayed_jobs
 ```
 
-Notes:
+**Notes:**
 
 - You can enqueue before or after workers start. Jobs persist in Redis until claimed.
 - Ensure both worker and enqueuer use the same Redis URL and queue name.
 - Some examples default to `redis://localhost:6379`. Adjust to your setup.
 
-## Core concepts
+## Core Concepts
 
-- Job: `trait Job { async fn perform(&self, &JobContext) -> Result<()>; fn name() -> &str; fn queue_name() -> &str }`
-- Queue: Persists job metadata and pushes to wait/delayed lists.
-- Worker: Polls a queue, claims jobs atomically via Lua, executes via `JobRegistry`.
-- Registry: Maps job type name -> executor for deserialization + dispatch.
+- **Job**: Defines work to be done. Implements `trait Job { async fn perform(&self, &JobContext) -> Result<()>; fn name() -> &str; fn queue_name() -> &str }`
+- **Queue**: Persists job metadata and manages wait/delayed/active/failed job lists in Redis
+- **Worker**: Polls queues, claims jobs atomically via Lua scripts, executes jobs via JobRegistry
+- **Registry**: Maps job type names to executors for deserialization and dispatch
+- **JobContext**: Provides access to application state and job metadata during execution
+
+## Configuration
+
+### Redis Configuration
+
+ChainMQ works with any Redis instance:
+
+```rust
+// Local Redis
+let redis_client = redis::Client::open("redis://127.0.0.1:6379/")?;
+
+// Redis with authentication
+let redis_client = redis::Client::open("redis://:password@127.0.0.1:6379/")?;
+
+// Redis with database selection
+let redis_client = redis::Client::open("redis://127.0.0.1:6379/1")?;
+```
+
+### Worker Configuration
+
+```rust
+// Using Redis instance
+let worker = WorkerBuilder::new_with_redis_instance(redis_client, registry)
+    .with_app_context(app_state)
+    .with_queue_name("priority_queue")
+    .with_concurrency(10)                           // Number of concurrent jobs
+    .with_poll_interval(Duration::from_secs(5))     // How often to check for jobs
+    .spawn()
+    .await?;
+
+// Using Redis URI
+let worker = WorkerBuilder::new_with_redis_uri("redis://127.0.0.1:6379/", registry)
+    .with_app_context(app_state)
+    .with_queue_name("background_tasks")
+    .with_concurrency(5)
+    .spawn()
+    .await?;
+```
+
+### Queue Configuration
+
+```rust
+let options = QueueOptions {
+    name: "default".to_string(),
+    redis_url: "redis://127.0.0.1:6379".to_string(),
+    redis_instance: None,
+    key_prefix: "rbq".to_string(),
+    default_concurrency: 10,
+    max_stalled_interval: 30000, // 30 seconds
+};
+
+let queue = Queue::new(options).await?;
+```
+
+### Job Configuration
+
+```rust
+let job = EmailJob {
+    to: "user@example.com".into(),
+    subject: "Urgent".into(),
+    body: "Please read".into(),
+};
+
+let opts = JobOptions {
+    delay_secs: Some(60),
+    priority: Priority::High,
+    attempts: 5,
+    backoff: BackoffStrategy::Exponential { base: 2, cap: 10 },
+    timeout_secs: Some(60),
+    rate_limit_key: Some("i_rater".to_string()),
+};
+
+let job_id = queue.enqueue_with_options(job, opts).await?;
+```
+
+## Advanced Usage
+
+### Service Injection with AppContext
+
+Inject your own services (database pools, HTTP clients, caches, etc.) via `AppContext`. The worker holds an `Arc<dyn AppContext>` and each job receives it through `JobContext`.
+
+```rust
+use chainmq::AppContext;
+use std::sync::Arc;
+
+#[derive(Clone)]
+struct AppState {
+    pub database: sqlx::PgPool,
+    pub http_client: reqwest::Client,
+    pub cache: Arc<RedisCache>,
+    pub mail_client: Arc<MailClient>,
+}
+
+impl AppContext for AppState {
+    fn clone_context(&self) -> Arc<dyn AppContext> {
+        Arc::new(self.clone())
+    }
+}
+```
+
+Use it inside jobs via the helper `ctx.app::<T>()`:
+
+```rust
+#[async_trait]
+impl Job for DatabaseJob {
+    async fn perform(&self, ctx: &JobContext) -> chainmq::Result<()> {
+        if let Some(app) = ctx.app::<AppState>() {
+            // Use database
+            let user = sqlx::query_as!(User, "SELECT * FROM users WHERE id = $1", self.user_id)
+                .fetch_one(&app.database)
+                .await?;
+
+            // Use HTTP client
+            let response = app.http_client
+                .get("https://api.example.com/data")
+                .send()
+                .await?;
+
+            // Use cache
+            app.cache.set(&format!("user:{}", user.id), &user).await?;
+        }
+
+        Ok(())
+    }
+
+    fn name() -> &'static str { "DatabaseJob" }
+    fn queue_name() -> &'static str { "database" }
+}
+```
+
+### Multiple Job Types
+
+Register multiple job types in a single registry:
+
+```rust
+let mut registry = JobRegistry::new();
+registry.register::<EmailJob>();
+registry.register::<ImageProcessingJob>();
+registry.register::<ReportGenerationJob>();
+registry.register::<CleanupJob>();
+
+// Single worker can handle all job types
+let worker = WorkerBuilder::new_with_redis_instance(redis_client, registry)
+    .with_queue_name("mixed_jobs")
+    .spawn()
+    .await?;
+```
+
+### Delayed Jobs
+
+Schedule jobs for future execution:
+
+```rust
+use chainmq::JobOptions;
+use std::time::Duration;
+
+let delayed_job = EmailJob {
+    to: "user@example.com".to_string(),
+    subject: "Reminder".to_string(),
+    body: "Don't forget about your appointment!".to_string(),
+};
+
+let options = JobOptions {
+    delay_secs: Some(3600), // 1 hour delay
+    ..Default::default()
+};
+
+queue.enqueue_with_options(delayed_job, options).await?;
+```
+
+### Error Handling and Retries
+
+Jobs that fail are automatically retried with configurable backoff:
+
+```rust
+#[async_trait]
+impl Job for RiskyJob {
+    async fn perform(&self, ctx: &JobContext) -> chainmq::Result<()> {
+        // This job might fail and will be retried
+        if random::<f32>() < 0.3 {
+            return Err("Random failure".into());
+        }
+
+        println!("Job succeeded!");
+        Ok(())
+    }
+
+    fn name() -> &'static str { "RiskyJob" }
+    fn queue_name() -> &'static str { "risky" }
+}
+```
 
 ## Service injection (AppContext)
 
@@ -265,7 +412,7 @@ Inject your own services (DB pools, HTTP clients, caches, etc.) via `AppContext`
 Define your application state:
 
 ```rust
-use bullmq_rs::AppContext;
+use chainmq::AppContext;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -313,30 +460,54 @@ impl Job for MyJob {
 
 ## Internals (high level)
 
-- Lua scripts in `src/lua` ensure atomic operations:
-  - `move_delayed.lua`: moves due jobs from delayed zset to wait list
-  - `claim_job.lua`: pops from wait -> adds to active, updates job state
-- Redis keys (default prefix `rbq`):
-  - `rbq:queue:{name}:wait`, `:active`, `:delayed`, `:failed`
-  - `rbq:job:{id}` stores serialized job metadata
+ChainMQ uses Lua scripts to ensure atomic operations:
+
+- **`move_delayed.lua`**: Moves due jobs from delayed sorted set to wait list
+- **`claim_job.lua`**: Atomically pops from wait list and adds to active list
+
+Redis keys use a configurable prefix (default `rbq`):
+
+- `rbq:queue:{name}:wait` - Jobs waiting to be processed
+- `rbq:queue:{name}:active` - Jobs currently being processed
+- `rbq:queue:{name}:delayed` - Jobs scheduled for future execution
+- `rbq:queue:{name}:failed` - Jobs that have failed processing
+- `rbq:job:{id}` - Individual job metadata and payload
 
 ## Troubleshooting
 
-- Perform not running:
-  - Ensure worker `.with_queue_name(...)` matches `Job::queue_name()`
-  - Same Redis URL for worker/enqueuer
-  - Check `LRANGE rbq:queue:{queue}:wait 0 -1` in `redis-cli`
-- Lua invocation error (arguments must be strings/integers):
-  - Fixed in the crate: `move_delayed.lua` is called with `ARGV` (queue_name, now)
-- No jobs claimed:
-  - Verify jobs enqueued to the same queue and not delayed into the future
-- Connection issues:
-  - Verify Redis URL and server is running
+**Jobs not being processed:**
+
+- Ensure worker `.with_queue_name()` matches `Job::queue_name()`
+- Verify same Redis URL for both worker and enqueuer
+- Check jobs are enqueued: `redis-cli LRANGE rbq:queue:{queue}:wait 0 -1`
+
+**Connection issues:**
+
+- Verify Redis server is running and accessible
+- Check Redis URL format and credentials
+- Test connection with `redis-cli ping`
+
+**Jobs failing silently:**
+
+- Check Redis logs and failed job queue: `LRANGE rbq:queue:{queue}:failed 0 -1`
+- Add logging/tracing to your job implementations
+- Ensure job payload can be properly serialized/deserialized
+
+**Performance issues:**
+
+- Increase worker concurrency with `.with_concurrency(n)`
+- Reduce poll interval with `.with_poll_interval(duration)`
+- Monitor Redis memory usage and job queue lengths
 
 ## Development
 
-- Build: `cargo build`
-- Test: `cargo test`
+```bash
+# Build the library
+cargo build
+
+# Run examples (requires Redis)
+cargo run --example worker_main
+```
 
 ## License
 
@@ -344,4 +515,4 @@ MIT
 
 ## Acknowledgements
 
-Inspired by existing Redis-backed queues and workers; built for ergonomic, type-safe Rust use.
+Inspired by existing Redis-backed job queues; built for ergonomic, type-safe Rust applications.
