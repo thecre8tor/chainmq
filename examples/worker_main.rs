@@ -80,12 +80,6 @@ async fn main() -> anyhow::Result<()> {
         concurrency,
         EmailJob::queue_name()
     );
-    // let mut worker = WorkerBuilder::new_with_redis_uri(redis_url, registry)
-    //     .with_app_context(app_state)
-    //     .with_concurrency(concurrency)
-    //     .with_queue_name(EmailJob::queue_name())
-    //     .spawn()
-    //     .await?;
 
     let client = Client::open(redis_url)?;
 
@@ -98,12 +92,6 @@ async fn main() -> anyhow::Result<()> {
 
     println!("[worker] Starting worker event loops...");
     worker.start().await?;
-    println!("[worker] Worker started. Press Ctrl+C to stop.");
-
-    tokio::signal::ctrl_c().await?;
-    println!("[worker] Shutdown signal received. Stopping worker...");
-    worker.stop().await;
-    println!("[worker] Worker stopped. Goodbye.");
 
     Ok(())
 }

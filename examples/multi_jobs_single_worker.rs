@@ -71,7 +71,6 @@ async fn main() -> anyhow::Result<()> {
 
     println!("[worker] multi-jobs-single-worker started on queue 'default'");
     worker.start().await?;
-    tokio::signal::ctrl_c().await?;
-    worker.stop().await;
+
     Ok(())
 }

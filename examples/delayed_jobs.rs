@@ -57,8 +57,6 @@ async fn main() -> anyhow::Result<()> {
     };
     let id = queue.enqueue_with_options(job, opts).await?;
     println!("[NotifyJob] enqueued with 5s delay id={}", id);
-
-    tokio::signal::ctrl_c().await?;
-    worker.stop().await;
+    
     Ok(())
 }

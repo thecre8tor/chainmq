@@ -60,7 +60,5 @@ async fn main() -> anyhow::Result<()> {
     let id = queue.enqueue_with_options(job, opts).await?;
     println!("[FlakyJob] enqueued id={}", id);
 
-    tokio::signal::ctrl_c().await?;
-    worker.stop().await;
     Ok(())
 }

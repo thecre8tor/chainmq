@@ -76,8 +76,6 @@ async fn main() -> anyhow::Result<()> {
     w_emails.start().await?;
     w_reports.start().await?;
     println!("[multi-workers] running: emails + reports");
-    tokio::signal::ctrl_c().await?;
-    w_emails.stop().await;
-    w_reports.stop().await;
+
     Ok(())
 }
