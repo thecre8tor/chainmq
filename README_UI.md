@@ -54,13 +54,11 @@ async fn main() -> anyhow::Result<()> {
 
 ### 3. Access the Dashboard
 
-Open your browser and navigate to:
-- **UI**: `http://127.0.0.1:8080/dashboard`
-- **API**: `http://127.0.0.1:8080/dashboard/api`
+Open your browser and navigate to the UI, for example `http://127.0.0.1:8080/dashboard` (adjust host, port, and path to match your `WebUIConfig`). The dashboard loads data over HTTP paths under `{ui_path}/api`, but those handlers are **not** a supported public REST API: use the web UI, not curl or other HTTP clients.
 
 ## Job execution logs
 
-The **Logs** tab on a job calls `GET …/api/jobs/{job_id}/logs` and reads lines stored in **Redis** (same instance and key prefix as the queue). They are **not** captured from `println!` or raw stdout: with concurrent jobs in one process, stdout is global and cannot be attributed per job. Use **`tracing`** (`info!`, `debug!`, etc.) inside your job’s `perform` while the worker has entered the `job_execution` span (the library does this around your handler).
+The **Logs** tab on a job reads lines stored in **Redis** (same instance and key prefix as the queue), loaded by the dashboard over its internal JSON routes. They are **not** captured from `println!` or raw stdout: with concurrent jobs in one process, stdout is global and cannot be attributed per job. Use **`tracing`** (`info!`, `debug!`, etc.) inside your job’s `perform` while the worker has entered the `job_execution` span (the library does this around your handler).
 
 **Default:** when you start a `Worker` and the process has **no** global `tracing` subscriber yet, ChainMQ installs one: `EnvFilter` (from `RUST_LOG`, else `info`), stdout formatting, and **`job_logs_layer`** for that worker’s queue. No extra setup is required (see [`examples/worker_main.rs`](./examples/worker_main.rs)).
 
@@ -80,7 +78,7 @@ pub struct WebUIConfig {
     /// when the process must accept remote connections (use a firewall or proxy in production).
     pub bind_host: String,
 
-    /// Port to bind the server to (default: 8080)
+    /// Port to bind the server to (default: 8085)
     pub port: u16,
 
     /// Base path for the UI (default: "/")
@@ -95,8 +93,7 @@ pub struct WebUIConfig {
 
 ```rust
 let config = WebUIConfig::default();
-// UI: http://127.0.0.1:8080/
-// API: http://127.0.0.1:8080/api
+// UI: http://127.0.0.1:8085/  (default port is 8085)
 ```
 
 #### Custom Dashboard Path
@@ -108,7 +105,6 @@ let config = WebUIConfig {
     ..Default::default()
 };
 // UI: http://127.0.0.1:8080/dashboard
-// API: http://127.0.0.1:8080/dashboard/api
 ```
 
 #### Custom Port and Path
@@ -120,7 +116,6 @@ let config = WebUIConfig {
     ..Default::default()
 };
 // UI: http://127.0.0.1:3000/admin/queues
-// API: http://127.0.0.1:3000/admin/queues/api
 ```
 
 #### Listen on All Interfaces (e.g. Containers or Direct LAN Access)
@@ -142,22 +137,11 @@ The dashboard expects these files under **`./ui`** (relative to the working dire
 - `app.js` — frontend logic
 - `styles.css` — styling
 
-Copy or symlink the [`ui/`](./ui/) directory from this repository next to your binary, or run from the project root during development. The API base path follows `ui_path` (e.g. `{ui_path}/api`).
+Copy or symlink the [`ui/`](./ui/) directory from this repository next to your binary, or run from the project root during development. The SPA resolves its data base path from `ui_path` (paths under `{ui_path}/api/...`).
 
-## API Endpoints
+## HTTP JSON and the dashboard
 
-All API endpoints are prefixed with `{ui_path}/api`:
-
-- `GET /api/queues` - List all queues
-- `GET /api/queues/{queue_name}/stats` - Get queue statistics
-- `GET /api/queues/{queue_name}/jobs/{state}` - List jobs by state
-- `GET /api/jobs/{job_id}` - Get job details
-- `GET /api/jobs/{job_id}/logs?limit=200` - Job execution log lines (from `job_logs_layer`; optional `limit`, max 500)
-- `POST /api/jobs/{job_id}/retry` - Retry a failed job
-- `DELETE /api/jobs/{job_id}/delete` - Delete a job
-- `POST /api/queues/clean` - Clean jobs by state
-- `POST /api/queues/{queue_name}/recover-stalled` - Recover stalled jobs
-- `POST /api/queues/{queue_name}/process-delayed` - Process delayed jobs
+The UI issues `fetch` calls to `{ui_path}/api/...`. Those routes exist only to support the bundled dashboard: they require a **same-origin** (or same-site) browser request (`Sec-Fetch-Site`), so command-line tools and generic HTTP clients receive **403 Forbidden**. They are not documented as a stable public API; operate the queue through the UI (or through your Rust `Queue` / workers in application code).
 
 ## Running in Production
 
@@ -186,11 +170,12 @@ let config = WebUIConfig {
 - Ensure `./ui` exists from the process working directory and contains `index.html`, `app.js`, and `styles.css`
 - Check browser console for errors
 
-### API calls failing
+### Dashboard data not loading
 
-- Verify the API path matches your `ui_path` configuration
-- Check that the queue is properly initialized
-- Ensure Redis is accessible
+- Open the UI in a normal browser tab (same origin as the server). Direct `curl` or scripts against `/api/...` are intentionally rejected.
+- Check the browser console and network tab for failed requests.
+- Verify `ui_path` matches how you open the app (including trailing slashes vs none).
+- Ensure Redis is reachable and the queue is initialized.
 
 ### Port already in use
 

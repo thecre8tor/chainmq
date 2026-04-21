@@ -6,7 +6,11 @@ use crate::{JobState, Queue};
 use actix_files;
 #[cfg(feature = "web-ui")]
 use actix_web::{
-    App, HttpResponse, HttpServer, Result as ActixResult, middleware::DefaultHeaders, web,
+    App, Error, HttpResponse, HttpServer, Result as ActixResult,
+    body::BoxBody,
+    dev::{ServiceRequest, ServiceResponse},
+    middleware::{DefaultHeaders, Next, from_fn},
+    web,
 };
 #[cfg(feature = "web-ui")]
 use serde::{Deserialize, Serialize};
@@ -358,6 +362,32 @@ async fn process_delayed(
 /// relative to the process working directory. Not configurable via the public API.
 const UI_STATIC_DIR: &str = "./ui";
 
+/// Reject non-browser callers (curl, scripts, other sites): the JSON under `/api` exists only
+/// for the bundled SPA. Browsers set `Sec-Fetch-Site: same-origin` (or `same-site`) on fetches
+/// from the dashboard.
+#[cfg(feature = "web-ui")]
+async fn ui_internal_json_only(
+    req: ServiceRequest,
+    next: Next<BoxBody>,
+) -> Result<ServiceResponse<BoxBody>, Error> {
+    let site = req
+        .headers()
+        .get("sec-fetch-site")
+        .and_then(|h| h.to_str().ok());
+    let allowed = matches!(site, Some("same-origin") | Some("same-site"));
+    if allowed {
+        Ok(next.call(req).await?.map_into_boxed_body())
+    } else {
+        let (req, _pl) = req.into_parts();
+        let res = HttpResponse::Forbidden()
+            .json(serde_json::json!({
+                "error": "This JSON API is internal to the web UI. Open the dashboard in a browser."
+            }))
+            .map_into_boxed_body();
+        Ok(ServiceResponse::new(req, res))
+    }
+}
+
 #[cfg(feature = "web-ui")]
 fn bind_addr_for_listen(host: &str, port: u16) -> String {
     use std::net::IpAddr;
@@ -388,7 +418,8 @@ pub struct WebUIConfig {
     /// Port to bind the server to
     pub port: u16,
     /// Base path for the UI (e.g., "/dashboard", "/admin/queues")
-    /// The API will be available at `{ui_path}/api`
+    /// Dashboard data is fetched from `{ui_path}/api/...`; those routes are internal to the UI
+    /// (same-origin browser requests only), not a supported public HTTP API.
     pub ui_path: String,
 }
 
@@ -402,7 +433,7 @@ impl Default for WebUIConfig {
     }
 }
 
-/// Start the web UI server with default settings (port 8080, path "/")
+/// Start the web UI server with default settings (see [`WebUIConfig::default`])
 /// This function starts the server and blocks until Ctrl+C is pressed.
 /// All logging and shutdown handling is managed internally.
 ///
@@ -487,56 +518,39 @@ pub async fn start_web_ui(
     let ui_path_for_closure = ui_path.clone();
     let ui_dir_for_closure = ui_dir.clone();
     let api_path_for_closure = api_path.clone();
-    let api_path_for_print = api_path.clone();
     let origin_for_print = origin.clone();
 
     let server = HttpServer::new(move || {
-        let api_path = api_path_for_closure.clone();
+        let api_scope = api_path_for_closure.clone();
         App::new()
             .wrap(
                 DefaultHeaders::new()
                     .add(("Cache-Control", "no-store, max-age=0, must-revalidate")),
             )
             .app_data(web::Data::new(app_state.clone()))
-            // Register API routes first (more specific)
-            .route(&format!("{}/queues", api_path), web::get().to(get_queues))
-            .route(
-                &format!("{}/queues/{{queue_name}}/stats", api_path),
-                web::get().to(get_queue_stats),
+            .service(
+                web::scope(&api_scope)
+                    .wrap(from_fn(ui_internal_json_only))
+                    .route("/queues", web::get().to(get_queues))
+                    .route("/queues/{queue_name}/stats", web::get().to(get_queue_stats))
+                    .route(
+                        "/queues/{queue_name}/jobs/{state}",
+                        web::get().to(list_jobs),
+                    )
+                    .route("/jobs/{job_id}/logs", web::get().to(get_job_logs))
+                    .route("/jobs/{job_id}", web::get().to(get_job))
+                    .route("/jobs/{job_id}/retry", web::post().to(retry_job))
+                    .route("/jobs/{job_id}/delete", web::delete().to(delete_job))
+                    .route("/queues/clean", web::post().to(clean_queue))
+                    .route(
+                        "/queues/{queue_name}/recover-stalled",
+                        web::post().to(recover_stalled),
+                    )
+                    .route(
+                        "/queues/{queue_name}/process-delayed",
+                        web::post().to(process_delayed),
+                    ),
             )
-            .route(
-                &format!("{}/queues/{{queue_name}}/jobs/{{state}}", api_path),
-                web::get().to(list_jobs),
-            )
-            .route(
-                &format!("{}/jobs/{{job_id}}/logs", api_path),
-                web::get().to(get_job_logs),
-            )
-            .route(
-                &format!("{}/jobs/{{job_id}}", api_path),
-                web::get().to(get_job),
-            )
-            .route(
-                &format!("{}/jobs/{{job_id}}/retry", api_path),
-                web::post().to(retry_job),
-            )
-            .route(
-                &format!("{}/jobs/{{job_id}}/delete", api_path),
-                web::delete().to(delete_job),
-            )
-            .route(
-                &format!("{}/queues/clean", api_path),
-                web::post().to(clean_queue),
-            )
-            .route(
-                &format!("{}/queues/{{queue_name}}/recover-stalled", api_path),
-                web::post().to(recover_stalled),
-            )
-            .route(
-                &format!("{}/queues/{{queue_name}}/process-delayed", api_path),
-                web::post().to(process_delayed),
-            )
-            // Register static files last (catch-all for non-API routes)
             .service(
                 actix_files::Files::new(&ui_path_for_closure, &ui_dir_for_closure)
                     .index_file("index.html")
@@ -549,10 +563,6 @@ pub async fn start_web_ui(
     println!(
         "[web-ui] ChainMQ Web UI listening on {} (UI: {}{})",
         bind_addr, origin_for_print, ui_path
-    );
-    println!(
-        "[web-ui] API available at {}{}",
-        origin_for_print, api_path_for_print
     );
     println!(
         "[web-ui] Open {}{} in your browser to view the dashboard",

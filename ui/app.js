@@ -1,4 +1,4 @@
-// Get API base path from window location or default to /api
+// JSON base path for dashboard fetches (same-origin only; not a public HTTP API)
 const API_BASE = (() => {
   // Check if we're in a subpath (e.g., /dashboard/api)
   const path = window.location.pathname;

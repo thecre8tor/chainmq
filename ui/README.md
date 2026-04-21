@@ -36,16 +36,9 @@ You can configure the Redis connection using the `REDIS_URL` environment variabl
 REDIS_URL=redis://127.0.0.1:6379 cargo run --example web_ui
 ```
 
-## API Endpoints
+## HTTP data loading
 
-The web UI provides the following REST API endpoints:
-
-- `GET /api/queues` - List all queues
-- `GET /api/queues/{queue_name}/stats` - Get queue statistics
-- `GET /api/queues/{queue_name}/jobs/{state}` - List jobs by state
-- `GET /api/jobs/{job_id}` - Get job details
-- `POST /api/jobs/{job_id}/retry` - Retry a failed job
-- `DELETE /api/jobs/{job_id}/delete` - Delete a job
+The SPA talks to `{base}/api/...` on the same origin. Those routes are **internal** to the dashboard (browser same-origin fetches only), not a documented public REST API for scripts or integrations.
 
 ## Usage
 

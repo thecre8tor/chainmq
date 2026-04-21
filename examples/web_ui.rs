@@ -1,5 +1,8 @@
 use actix_web::{
-    App, HttpResponse, HttpServer, Result as ActixResult, middleware::DefaultHeaders, web,
+    App, Error, HttpResponse, HttpServer, Result as ActixResult, body::BoxBody,
+    dev::{ServiceRequest, ServiceResponse},
+    middleware::{DefaultHeaders, Next, from_fn},
+    web,
 };
 use chainmq::{JobState, Queue, QueueOptions};
 use redis::Client as RedisClient;
@@ -368,6 +371,29 @@ async fn process_delayed(
     }
 }
 
+/// Match `chainmq::web_ui`: JSON routes are only for same-origin browser fetches from the SPA.
+async fn ui_internal_json_only(
+    req: ServiceRequest,
+    next: Next<BoxBody>,
+) -> Result<ServiceResponse<BoxBody>, Error> {
+    let site = req
+        .headers()
+        .get("sec-fetch-site")
+        .and_then(|h| h.to_str().ok());
+    let allowed = matches!(site, Some("same-origin") | Some("same-site"));
+    if allowed {
+        Ok(next.call(req).await?.map_into_boxed_body())
+    } else {
+        let (req, _pl) = req.into_parts();
+        let res = HttpResponse::Forbidden()
+            .json(chainmq::serde_json::json!({
+                "error": "This JSON API is internal to the web UI. Open the dashboard in a browser."
+            }))
+            .map_into_boxed_body();
+        Ok(ServiceResponse::new(req, res))
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // Initialize logging
@@ -404,27 +430,31 @@ async fn main() -> std::io::Result<()> {
                     .add(("Cache-Control", "no-store, max-age=0, must-revalidate")),
             )
             .app_data(web::Data::new(app_state.clone()))
-            .route("/api/queues", web::get().to(get_queues))
-            .route(
-                "/api/queues/{queue_name}/stats",
-                web::get().to(get_queue_stats),
-            )
-            .route(
-                "/api/queues/{queue_name}/jobs/{state}",
-                web::get().to(list_jobs),
-            )
-            .route("/api/jobs/{job_id}/logs", web::get().to(get_job_logs))
-            .route("/api/jobs/{job_id}", web::get().to(get_job))
-            .route("/api/jobs/{job_id}/retry", web::post().to(retry_job))
-            .route("/api/jobs/{job_id}/delete", web::delete().to(delete_job))
-            .route("/api/queues/clean", web::post().to(clean_queue))
-            .route(
-                "/api/queues/{queue_name}/recover-stalled",
-                web::post().to(recover_stalled),
-            )
-            .route(
-                "/api/queues/{queue_name}/process-delayed",
-                web::post().to(process_delayed),
+            .service(
+                web::scope("/api")
+                    .wrap(from_fn(ui_internal_json_only))
+                    .route("/queues", web::get().to(get_queues))
+                    .route(
+                        "/queues/{queue_name}/stats",
+                        web::get().to(get_queue_stats),
+                    )
+                    .route(
+                        "/queues/{queue_name}/jobs/{state}",
+                        web::get().to(list_jobs),
+                    )
+                    .route("/jobs/{job_id}/logs", web::get().to(get_job_logs))
+                    .route("/jobs/{job_id}", web::get().to(get_job))
+                    .route("/jobs/{job_id}/retry", web::post().to(retry_job))
+                    .route("/jobs/{job_id}/delete", web::delete().to(delete_job))
+                    .route("/queues/clean", web::post().to(clean_queue))
+                    .route(
+                        "/queues/{queue_name}/recover-stalled",
+                        web::post().to(recover_stalled),
+                    )
+                    .route(
+                        "/queues/{queue_name}/process-delayed",
+                        web::post().to(process_delayed),
+                    ),
             )
             .service(actix_files::Files::new("/", "./ui").index_file("index.html"))
     })
