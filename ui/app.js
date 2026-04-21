@@ -212,23 +212,6 @@ function updateJobDetailUpdatedLabel() {
     sec < 1 ? "Updated just now" : `Updated ${sec}s ago`;
 }
 
-function updateJobDetailToolbarMeta(job) {
-  const wrap = document.getElementById("jobDetailToolbarMeta");
-  const nameEl = document.getElementById("jobDetailToolbarName");
-  const idEl = document.getElementById("jobDetailToolbarId");
-  if (!wrap || !nameEl || !idEl) return;
-  wrap.hidden = false;
-  nameEl.textContent = job.name ?? "";
-  const jid = String(job.id ?? "");
-  idEl.textContent = jid ? truncateMiddle(jid, 8, 6) : "";
-  idEl.title = jid;
-}
-
-function hideJobDetailToolbarMeta() {
-  const wrap = document.getElementById("jobDetailToolbarMeta");
-  if (wrap) wrap.hidden = true;
-}
-
 /** @param {string | null | undefined} iso */
 function formatClockFromIso(iso) {
   if (iso == null) return "—";
@@ -1469,7 +1452,6 @@ async function loadJobDetailPageContent({ silent }) {
 
     renderJobDetailPage(job);
     touchJobDetailFetched();
-    updateJobDetailToolbarMeta(job);
     switchJobDetailTab(jobDetailSelectedTab);
     if (jobDetailSelectedTab === "logs") {
       void loadJobLogsPanel(job.id);
@@ -1869,7 +1851,6 @@ function closeJobDetailPage(opts = {}) {
   detailJob = null;
 
   stopJobDetailRelativeTimer();
-  hideJobDetailToolbarMeta();
   jobDetailLastFetchedAt = null;
   jobDetailCloseOverflowMenu();
 

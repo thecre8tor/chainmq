@@ -13,6 +13,18 @@ The ChainMQ Web UI provides a modern, BullMQ-style dashboard for monitoring and 
 - 📱 Responsive design
 - 📝 Per-job execution logs (when workers use `job_logs_layer`; see [Job execution logs](#job-execution-logs))
 
+## Responsive layout
+
+The UI scales from **desktop** (persistent sidebar, wide tables, multi-column job detail) to **mobile** (top chrome with menu drawer, stacked stat cards, single-column job detail and logs). Static assets live under [`ui/`](./ui/) (see [UI files](#ui-files)).
+
+| Desktop — queue | Desktop — job detail |
+| :-------------: | :------------------: |
+| ![ChainMQ dashboard: queue and jobs on a wide screen](docs/images/dashboard/desktop-queue.png) | ![ChainMQ dashboard: job detail on a wide screen](docs/images/dashboard/desktop-job-detail.png) |
+
+| Mobile — queue | Mobile — job detail |
+| :------------: | :-----------------: |
+| ![ChainMQ dashboard: queue view on a narrow screen](docs/images/dashboard/mobile-queue.png) | ![ChainMQ dashboard: job detail on a narrow screen](docs/images/dashboard/mobile-job-detail.png) |
+
 ## Quick Start
 
 ### 1. Enable the web-ui feature

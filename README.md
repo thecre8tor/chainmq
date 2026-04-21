@@ -1,4 +1,4 @@
-# ChainMQ
+# <img src="ui/favicon.svg" alt="" width="28" height="28" /> ChainMQ
 
 A Redis-backed, type-safe job queue for Rust. Provides job registration and execution, delayed jobs, retries with backoff, and scalable workers.
 
@@ -16,6 +16,18 @@ This crate is library-first. Runnable examples demonstrate typical patterns (sin
 - 📊 Application Context: Share application state across jobs
 - 🖥️ Web UI: Dashboard for monitoring and managing queues (one server sees every logical queue under the same Redis `key_prefix`; see [README_UI.md](./README_UI.md))
 - 📝 Job execution logs: optional Redis-backed log lines for the dashboard when using `tracing` and the job-log layer (documented in README_UI.md)
+
+### Web dashboard (responsive)
+
+The dashboard adapts from wide layouts (sidebar + dense tables) to narrow viewports (mobile chrome, off-canvas queue menu, stacked controls and cards). Setup and options are in [README_UI.md](./README_UI.md).
+
+| Desktop — queue | Desktop — job detail |
+| :-------------: | :------------------: |
+| ![ChainMQ dashboard: queue and jobs on a wide screen](docs/images/dashboard/desktop-queue.png) | ![ChainMQ dashboard: job detail on a wide screen](docs/images/dashboard/desktop-job-detail.png) |
+
+| Mobile — queue | Mobile — job detail |
+| :------------: | :-----------------: |
+| ![ChainMQ dashboard: queue view on a narrow screen](docs/images/dashboard/mobile-queue.png) | ![ChainMQ dashboard: job detail on a narrow screen](docs/images/dashboard/mobile-job-detail.png) |
 
 ## Quick Start
 

@@ -2424,13 +2424,55 @@ body {
     padding: 22px 18px 32px;
   }
 
+  /*
+   * Toolbar (back, live, actions): row 1 back + overflow; row 2 full-width live.
+   */
   .job-detail-toolbar {
-    flex-direction: column;
-    align-items: stretch;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    gap: 8px 12px;
+    align-items: center;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+  }
+
+  .job-detail-toolbar > .job-detail-back {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
+    width: max-content;
+    max-width: 100%;
   }
 
   .job-detail-toolbar-actions {
-    justify-content: flex-start;
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+    align-self: center;
+  }
+
+  .job-detail-toolbar-live {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    flex: none;
+    width: 100%;
+    margin-left: 0;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    padding-top: 10px;
+    border-top: 1px solid color-mix(in srgb, var(--border-color) 52%, transparent);
+    margin-top: 0;
+  }
+
+  .job-detail-toolbar-live .job-detail-toolbar-refresh {
+    margin-left: auto;
+  }
+
+  .job-detail-updated-label {
+    min-width: 0;
+    flex: 1 1 auto;
   }
 
   .job-detail-hero {
@@ -2484,11 +2526,6 @@ body {
     max-height: min(58vh, 560px);
   }
 
-  .job-detail-log-line {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 4px 8px;
-  }
-
   .job-detail-log-ts {
     font-size: 10px;
   }
@@ -2533,38 +2570,8 @@ body {
 
 /* ——— Job detail v2: toolbar meta, tabs, hero, grid, cards, logs ——— */
 
-.job-detail-toolbar-start {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px 16px;
-  flex: 1 1 200px;
-  min-width: 0;
-}
-
-.job-detail-toolbar-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.job-detail-toolbar-name {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: min(280px, 100%);
-}
-
-.job-detail-toolbar-id {
-  font-family: "SF Mono", "Monaco", "Cascadia Code", "Roboto Mono", monospace;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  letter-spacing: 0.02em;
+.job-detail-toolbar > .job-detail-back {
+  flex-shrink: 0;
 }
 
 .job-detail-toolbar-live {
@@ -2572,6 +2579,7 @@ body {
   align-items: center;
   gap: 8px;
   flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .job-detail-updated-label {
@@ -2749,8 +2757,8 @@ body {
 
 .job-detail-log-line {
   display: grid;
-  grid-template-columns: minmax(0, 9.5rem) 4.5rem minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: minmax(0, clamp(5.5rem, 24vw, 9.5rem)) minmax(3rem, max-content) minmax(0, 1fr);
+  gap: 8px 12px;
   padding: 8px 10px;
   border-radius: var(--radius-sm);
   border-bottom: 1px solid color-mix(in srgb, var(--border-color) 45%, transparent);
@@ -2761,6 +2769,10 @@ body {
   font-variant-numeric: tabular-nums;
   color: var(--text-tertiary);
   font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .job-detail-log-level {
@@ -2782,7 +2794,37 @@ body {
 
 .job-detail-log-msg {
   color: var(--text-primary);
-  word-break: break-word;
+  min-width: 0;
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+
+@media (max-width: 768px) {
+  /* Must follow base .job-detail-log-* so these rules win in the cascade */
+  .job-detail-log-line {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    gap: 6px 10px;
+    align-items: center;
+  }
+
+  .job-detail-log-ts {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
+  }
+
+  .job-detail-log-level {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+    white-space: nowrap;
+  }
+
+  .job-detail-log-msg {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
 }
 
 .job-detail-hero--v2 {
