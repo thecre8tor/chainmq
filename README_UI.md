@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
 
 ### 3. Access the Dashboard
 
-Open your browser and navigate to the UI, for example `http://127.0.0.1:8080/dashboard` (adjust host, port, and path to match your `WebUIConfig`). The dashboard loads data over HTTP paths under `{ui_path}/api`, but those handlers are **not** a supported public REST API: use the web UI, not curl or other HTTP clients.
+Open your browser and navigate to the UI, for example `http://127.0.0.1:8080/dashboard` (adjust host, port, and path to match your `WebUIConfig`). Unless you set `WebUIConfig { auth: None, .. }`, you will be prompted to sign in; the built-in default username and password are **`ChainMQ`** / **`ChainMQ`** until you override `WebUIConfig.auth`. The dashboard loads data over HTTP paths under `{ui_path}/api`, but those handlers are **not** a supported public REST API: use the web UI, not curl or other HTTP clients.
 
 ## Job execution logs
 
@@ -74,18 +74,24 @@ Optional: cap retention with **`QueueOptions::job_logs_max_lines`** (default `50
 
 ```rust
 pub struct WebUIConfig {
-    /// Host or IP to bind (default: "127.0.0.1"). Use "0.0.0.0" for all IPv4 interfaces
-    /// when the process must accept remote connections (use a firewall or proxy in production).
     pub bind_host: String,
-
-    /// Port to bind the server to (default: 8085)
     pub port: u16,
-
-    /// Base path for the UI (default: "/")
-    /// Examples: "/dashboard", "/admin/queues", "/monitoring"
     pub ui_path: String,
+    /// When `Some`, the dashboard requires login (signed HttpOnly session cookie). Default: `Some(WebUIAuth::default())`.
+    pub auth: Option<WebUIAuth>,
+    /// 64-byte signing key for session cookies; if `None` while `auth` is set, a fixed **dev-only** key is used.
+    pub session_secret: Option<[u8; 64]>,
+    /// Session cookie `Secure` flag (use `true` behind HTTPS).
+    pub cookie_secure: bool,
+}
+
+pub struct WebUIAuth {
+    pub username: String,
+    pub password: String,
 }
 ```
+
+Defaults for `WebUIAuth` are username **`ChainMQ`** and password **`ChainMQ`** (for local use only; override in production).
 
 ### Examples
 
@@ -94,6 +100,7 @@ pub struct WebUIConfig {
 ```rust
 let config = WebUIConfig::default();
 // UI: http://127.0.0.1:8085/  (default port is 8085)
+// Login is enabled by default (username / password: ChainMQ / ChainMQ) until you change `auth`.
 ```
 
 #### Custom Dashboard Path
@@ -129,6 +136,34 @@ let config = WebUIConfig {
 // Prefer a reverse proxy or firewall when bind_host is not loopback.
 ```
 
+#### Dashboard login (default on)
+
+`WebUIConfig::default()` enables session login with `WebUIAuth::default()` (**`ChainMQ` / `ChainMQ`**). Set your own operator credentials in Rust:
+
+```rust
+use chainmq::{WebUIAuth, WebUIConfig};
+
+let config = WebUIConfig {
+    auth: Some(WebUIAuth {
+        username: "operator".into(),
+        password: std::env::var("DASHBOARD_PASSWORD").unwrap(),
+    }),
+    // Use a random 64-byte key in production, e.g. read from env or a secrets manager:
+    // session_secret: Some(*b"0123456789012345678901234567890123456789012345678901234567890123"),
+    cookie_secure: true, // when serving the UI over HTTPS
+    ..Default::default()
+};
+```
+
+To **turn off** the login screen (only for trusted local use), set `auth: None`:
+
+```rust
+let config = WebUIConfig {
+    auth: None,
+    ..Default::default()
+};
+```
+
 ## UI files
 
 The dashboard expects these files under **`./ui`** (relative to the working directory when the process starts):
@@ -141,14 +176,14 @@ Copy or symlink the [`ui/`](./ui/) directory from this repository next to your b
 
 ## HTTP JSON and the dashboard
 
-The UI issues `fetch` calls to `{ui_path}/api/...`. Those routes exist only to support the bundled dashboard: they require a **same-origin** (or same-site) browser request (`Sec-Fetch-Site`), so command-line tools and generic HTTP clients receive **403 Forbidden**. They are not documented as a stable public API; operate the queue through the UI (or through your Rust `Queue` / workers in application code).
+The UI issues `fetch` calls to `{ui_path}/api/...` with **credentials** (session cookie) when auth is enabled. Those routes exist only to support the bundled dashboard: they require a **same-origin** (or same-site) browser request (`Sec-Fetch-Site`), so command-line tools and generic HTTP clients receive **403 Forbidden**. They are not documented as a stable public API; operate the queue through the UI (or through your Rust `Queue` / workers in application code).
 
 ## Running in Production
 
 For production use, consider:
 
 1. **Reverse Proxy**: Use nginx or similar to handle SSL/TLS
-2. **Authentication**: Add authentication middleware before starting the UI
+2. **Authentication**: Set `WebUIConfig.auth` with strong credentials, `session_secret: Some([u8; 64])` from a CSPRNG, and `cookie_secure: true` when serving over HTTPS. The built-in login is for an **internal operator dashboard**, not multi-tenant identity.
 3. **Static assets**: Ensure a `./ui` directory (with the three files above) exists relative to the process working directory—e.g. copy or symlink the `ui` folder beside your binary and set the service `WorkingDirectory` accordingly
 
 Example with environment variables for **port** and **path** only:

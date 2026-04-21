@@ -97,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
         ..Default::default()
     })
     .await?;
+
     start_web_ui_simple(ui_queue).await?;
 
     Ok(())

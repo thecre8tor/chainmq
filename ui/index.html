@@ -10,9 +10,49 @@
       href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="styles.css?v=chainmq-ui-24" />
+    <link rel="stylesheet" href="styles.css?v=chainmq-ui-25" />
   </head>
   <body>
+    <div
+      id="loginOverlay"
+      class="login-overlay"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="loginTitle"
+    >
+      <form id="loginForm" class="login-card" autocomplete="on">
+        <h2 id="loginTitle" class="login-title">ChainMQ</h2>
+        <p class="login-subtitle">Sign in to the dashboard</p>
+        <label class="login-label">
+          <span>Username</span>
+          <input
+            id="loginUsername"
+            name="username"
+            type="text"
+            autocomplete="username"
+            value="ChainMQ"
+            required
+            class="login-input"
+          />
+        </label>
+        <label class="login-label">
+          <span>Password</span>
+          <input
+            id="loginPassword"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            required
+            class="login-input"
+          />
+        </label>
+        <p id="loginError" class="login-error" hidden></p>
+        <button type="submit" class="login-submit" id="loginSubmit">
+          Sign in
+        </button>
+      </form>
+    </div>
     <div class="app-container" id="appContainer">
       <!-- Sidebar -->
       <aside class="sidebar" aria-label="Queues navigation">
@@ -53,6 +93,28 @@
               <h1>ChainMQ</h1>
             </div>
             <div class="header-actions">
+              <button
+                type="button"
+                id="logoutBtn"
+                class="icon-btn"
+                title="Sign out"
+                hidden
+                aria-label="Sign out"
+              >
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  aria-hidden="true"
+                >
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                  <polyline points="16 17 21 12 16 7" />
+                  <line x1="21" y1="12" x2="9" y2="12" />
+                </svg>
+              </button>
               <button id="themeToggle" class="icon-btn" title="Toggle theme">
               <svg
                 id="themeIcon"

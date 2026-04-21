@@ -10,6 +10,121 @@ const API_BASE = (() => {
   return "/api";
 })();
 
+/**
+ * Same-origin API fetch with session cookie; opens login overlay on 401 + reauth.
+ * @param {string} relativePath path after API base, e.g. `queues` or `jobs/…/logs?limit=200`
+ * @param {RequestInit} [init]
+ */
+async function apiFetch(relativePath, init = {}) {
+  const rel = String(relativePath).replace(/^\/+/, "");
+  const url = `${API_BASE}/${rel}`;
+  const response = await fetch(url, {
+    ...init,
+    credentials: "include",
+  });
+  if (response.status === 401) {
+    let body = {};
+    try {
+      body = await response.json();
+    } catch {
+      /* ignore */
+    }
+    if (body.reauth) {
+      showLoginOverlay(body.error || null);
+      throw new Error(body.error || "Not authenticated");
+    }
+  }
+  return response;
+}
+
+async function fetchAuthSession() {
+  const response = await fetch(`${API_BASE}/auth/session`, {
+    credentials: "include",
+  });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+function showLoginOverlay(message) {
+  const overlay = document.getElementById("loginOverlay");
+  if (!overlay) return;
+  overlay.hidden = false;
+  const err = document.getElementById("loginError");
+  if (err) {
+    if (message) {
+      err.textContent = message;
+      err.hidden = false;
+    } else {
+      err.textContent = "";
+      err.hidden = true;
+    }
+  }
+  const u = document.getElementById("loginUsername");
+  const p = document.getElementById("loginPassword");
+  if (p) p.value = "";
+  if (u) u.focus();
+}
+
+function hideLoginOverlay() {
+  const overlay = document.getElementById("loginOverlay");
+  if (overlay) overlay.hidden = true;
+}
+
+function setLogoutVisible(on) {
+  const b = document.getElementById("logoutBtn");
+  if (b) b.hidden = !on;
+}
+
+let dashboardIntervalsStarted = false;
+
+function startDashboardIntervals() {
+  if (dashboardIntervalsStarted) return;
+  dashboardIntervalsStarted = true;
+
+  setInterval(() => {
+    if (document.getElementById("loginOverlay")?.hidden === false) {
+      return;
+    }
+    if (jobDetailActive && currentJobId) {
+      if (getJobDetailAutoRefresh()) {
+        void loadJobDetailPageContent({ silent: true });
+      }
+    } else if (currentQueue) {
+      loadQueueStats();
+      loadJobs();
+    } else {
+      loadQueues();
+    }
+  }, 3000);
+
+  setInterval(updateDelayedCountdowns, 1000);
+}
+
+async function bootstrapAuthThenDashboard() {
+  try {
+    const s = await fetchAuthSession();
+    setLogoutVisible(Boolean(s.auth_enabled) && Boolean(s.authenticated));
+    if (s.auth_enabled && !s.authenticated) {
+      const u = document.getElementById("loginUsername");
+      if (u && !u.value) u.value = "ChainMQ";
+      showLoginOverlay(null);
+      return;
+    }
+    hideLoginOverlay();
+    loadQueues();
+    startDashboardIntervals();
+  } catch (e) {
+    console.error("Auth bootstrap failed:", e);
+    const list = document.getElementById("queues-list");
+    if (list) {
+      list.innerHTML =
+        '<div class="loading-queues">Could not reach the dashboard API</div>';
+    }
+  }
+}
+
 /** @returns {{ queueName: string, jobId: string } | null} */
 function parseJobRoute(hash) {
   const h = hash || "";
@@ -275,8 +390,8 @@ function jobDetailCloseOverflowMenu() {
 }
 
 async function fetchJobLogs(jobId) {
-  const response = await fetch(
-    `${API_BASE}/jobs/${encodeURIComponent(jobId)}/logs?limit=200`,
+  const response = await apiFetch(
+    `jobs/${encodeURIComponent(jobId)}/logs?limit=200`,
   );
   if (response.status === 404) {
     return { ok: true, lines: [] };
@@ -538,12 +653,56 @@ function toggleSidebarCollapsed() {
   setSidebarCollapsed(!app.classList.contains("sidebar-collapsed"));
 }
 
+function wireLoginFormOnce() {
+  const form = document.getElementById("loginForm");
+  if (!form || form.dataset.wired === "1") return;
+  form.dataset.wired = "1";
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const errEl = document.getElementById("loginError");
+    const submit = document.getElementById("loginSubmit");
+    const fd = new FormData(/** @type {HTMLFormElement} */ (e.target));
+    const username = String(fd.get("username") || "");
+    const password = String(fd.get("password") || "");
+    if (errEl) errEl.hidden = true;
+    if (submit) submit.disabled = true;
+    try {
+      const response = await fetch(`${API_BASE}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+        credentials: "include",
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (errEl) {
+          errEl.textContent = data.error || "Sign in failed";
+          errEl.hidden = false;
+        }
+        return;
+      }
+      hideLoginOverlay();
+      setLogoutVisible(true);
+      startDashboardIntervals();
+      loadQueues();
+    } catch (err) {
+      if (errEl) {
+        errEl.textContent =
+          err instanceof Error ? err.message : "Sign in failed";
+        errEl.hidden = false;
+      }
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+  });
+}
+
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {
   initTheme();
   initSidebarCollapsed();
-  loadQueues();
   setupEventListeners();
+  wireLoginFormOnce();
 
   const autoCb = document.getElementById("jobDetailAutoRefresh");
   if (autoCb) {
@@ -553,22 +712,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Auto-refresh every 3 seconds
-  setInterval(() => {
-    if (jobDetailActive && currentJobId) {
-      if (getJobDetailAutoRefresh()) {
-        void loadJobDetailPageContent({ silent: true });
-      }
-    } else if (currentQueue) {
-      loadQueueStats();
-      loadJobs();
-    } else {
-      loadQueues();
-    }
-  }, 3000);
-
-  // Live countdown for delayed jobs (independent of job list refresh)
-  setInterval(updateDelayedCountdowns, 1000);
+  void bootstrapAuthThenDashboard();
 
   window.addEventListener("hashchange", () => {
     const parsed = parseJobRoute(window.location.hash);
@@ -592,6 +736,21 @@ document.addEventListener("DOMContentLoaded", () => {
 function setupEventListeners() {
   // Theme toggle
   document.getElementById("themeToggle").addEventListener("click", toggleTheme);
+
+  const logoutBtn = document.getElementById("logoutBtn");
+  if (logoutBtn) {
+    logoutBtn.addEventListener("click", async () => {
+      try {
+        await fetch(`${API_BASE}/auth/logout`, {
+          method: "POST",
+          credentials: "include",
+        });
+      } catch {
+        /* ignore */
+      }
+      window.location.reload();
+    });
+  }
 
   const sidebarCollapseBtn = document.getElementById("sidebarCollapseBtn");
   if (sidebarCollapseBtn) {
@@ -875,7 +1034,7 @@ function switchState(state) {
 
 async function loadQueues() {
   try {
-    const response = await fetch(`${API_BASE}/queues`);
+    const response = await apiFetch("queues");
     const data = await response.json();
 
     queues = data.queues || [];
@@ -933,7 +1092,7 @@ function renderQueues() {
 
 async function loadQueueStatsForSidebar(queueName) {
   try {
-    const response = await fetch(`${API_BASE}/queues/${queueName}/stats`);
+    const response = await apiFetch(`queues/${queueName}/stats`);
     const data = await response.json();
     const total =
       (data.waiting || 0) +
@@ -984,7 +1143,7 @@ async function loadQueueStats() {
   if (!currentQueue) return;
 
   try {
-    const response = await fetch(`${API_BASE}/queues/${currentQueue}/stats`);
+    const response = await apiFetch(`queues/${currentQueue}/stats`);
     const data = await response.json();
 
     // Update stat cards
@@ -1005,8 +1164,8 @@ async function loadJobs() {
   if (!currentQueue) return;
 
   try {
-    const response = await fetch(
-      `${API_BASE}/queues/${currentQueue}/jobs/${currentState}?limit=1000`,
+    const response = await apiFetch(
+      `queues/${currentQueue}/jobs/${currentState}?limit=1000`,
     );
 
     if (!response.ok) {
@@ -1189,7 +1348,7 @@ async function loadJobDetailPageContent({ silent }) {
     container.innerHTML = '<p class="job-detail-loading">Loading job…</p>';
   }
   try {
-    const response = await fetch(`${API_BASE}/jobs/${currentJobId}`);
+    const response = await apiFetch(`jobs/${currentJobId}`);
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(body.error || `HTTP ${response.status}`);
@@ -1667,8 +1826,8 @@ function deleteJobById(jobId, queueName) {
 
 async function deleteJobApi(jobId, queueName) {
   const params = new URLSearchParams({ queue_name: queueName });
-  const response = await fetch(
-    `${API_BASE}/jobs/${encodeURIComponent(jobId)}/delete?${params}`,
+  const response = await apiFetch(
+    `jobs/${encodeURIComponent(jobId)}/delete?${params}`,
     { method: "DELETE" },
   );
   const data = await response.json().catch(() => ({}));
@@ -1721,7 +1880,7 @@ async function retrySelectedJobs() {
 
   let failures = 0;
   for (const job of records) {
-    const response = await fetch(`${API_BASE}/jobs/${job.id}/retry`, {
+    const response = await apiFetch(`jobs/${job.id}/retry`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ queue_name: job.queue_name }),
@@ -1748,7 +1907,7 @@ async function retryJob() {
   if (!queueName) return;
 
   try {
-    const response = await fetch(`${API_BASE}/jobs/${currentJobId}/retry`, {
+    const response = await apiFetch(`jobs/${currentJobId}/retry`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1815,8 +1974,8 @@ async function processDelayed() {
   }
 
   try {
-    const response = await fetch(
-      `${API_BASE}/queues/${currentQueue}/process-delayed`,
+    const response = await apiFetch(
+      `queues/${currentQueue}/process-delayed`,
       {
         method: "POST",
         headers: {
@@ -1855,8 +2014,8 @@ async function recoverStalled() {
   }
 
   try {
-    const response = await fetch(
-      `${API_BASE}/queues/${currentQueue}/recover-stalled`,
+    const response = await apiFetch(
+      `queues/${currentQueue}/recover-stalled`,
       {
         method: "POST",
         headers: {
@@ -1903,7 +2062,7 @@ async function cleanQueue() {
   }
 
   try {
-    const response = await fetch(`${API_BASE}/queues/clean`, {
+    const response = await apiFetch("queues/clean", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

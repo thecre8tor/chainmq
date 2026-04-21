@@ -28,7 +28,7 @@ pub use registry::JobRegistry;
 pub use worker::{Worker, WorkerBuilder};
 
 #[cfg(feature = "web-ui")]
-pub use web_ui::{WebUIConfig, start_web_ui, start_web_ui_simple};
+pub use web_ui::{WebUIAuth, WebUIConfig, start_web_ui, start_web_ui_simple};
 
 // Provide a no-op version when web-ui feature is disabled
 #[cfg(not(feature = "web-ui"))]
