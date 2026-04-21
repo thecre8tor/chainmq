@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="styles.css?v=chainmq-ui-21" />
+    <link rel="stylesheet" href="styles.css?v=chainmq-ui-23" />
   </head>
   <body>
     <div class="app-container">
@@ -403,32 +403,59 @@
         <!-- Job detail (full page) -->
         <div id="job-detail-view" class="job-detail-view" style="display: none">
           <div class="job-detail-toolbar">
-            <button
-              type="button"
-              id="jobDetailBackBtn"
-              class="btn btn-secondary btn-icon job-detail-back"
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              >
-                <path d="M19 12H5M12 19l-7-7 7-7" />
-              </svg>
-              Back to queue
-            </button>
-            <div class="job-detail-toolbar-actions">
+            <div class="job-detail-toolbar-start">
               <button
                 type="button"
-                id="copyJobLinkBtn"
-                class="btn btn-secondary btn-sm"
-                title="Copy link to this job"
+                id="jobDetailBackBtn"
+                class="btn btn-secondary btn-icon job-detail-back"
               >
-                Copy link
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M19 12H5M12 19l-7-7 7-7" />
+                </svg>
+                Back to queue
               </button>
+              <div id="jobDetailToolbarMeta" class="job-detail-toolbar-meta" hidden>
+                <span id="jobDetailToolbarName" class="job-detail-toolbar-name"></span>
+                <span id="jobDetailToolbarId" class="job-detail-toolbar-id"></span>
+              </div>
+            </div>
+            <div class="job-detail-toolbar-live" aria-live="polite">
+              <span id="jobDetailUpdatedLabel" class="job-detail-updated-label"
+                >Updated —</span
+              >
+              <button
+                type="button"
+                id="jobDetailRefreshBtn"
+                class="icon-btn job-detail-toolbar-refresh"
+                title="Refresh job"
+                aria-label="Refresh job"
+              >
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path
+                    d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.48L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"
+                  />
+                </svg>
+              </button>
+              <label class="job-detail-auto-refresh">
+                <input type="checkbox" id="jobDetailAutoRefresh" checked />
+                <span>Auto</span>
+              </label>
+            </div>
+            <div class="job-detail-toolbar-actions">
               <button
                 type="button"
                 id="retryJobBtn"
@@ -450,22 +477,37 @@
                 </svg>
                 Retry job
               </button>
-              <button type="button" id="deleteJobBtn" class="btn btn-danger btn-icon">
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
+              <details class="job-detail-overflow" id="jobDetailOverflow">
+                <summary
+                  class="job-detail-overflow-trigger icon-btn"
+                  title="More actions"
+                  aria-label="More actions"
                 >
-                  <polyline points="3 6 5 6 21 6" />
-                  <path
-                    d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
-                  />
-                </svg>
-                Delete
-              </button>
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <circle cx="12" cy="12" r="1" fill="currentColor" />
+                    <circle cx="19" cy="12" r="1" fill="currentColor" />
+                    <circle cx="5" cy="12" r="1" fill="currentColor" />
+                  </svg>
+                </summary>
+                <div class="job-detail-overflow-menu" role="menu">
+                  <button type="button" class="job-detail-overflow-item" id="jobDetailCopyLinkBtn" role="menuitem">
+                    Copy link
+                  </button>
+                  <button type="button" class="job-detail-overflow-item" id="jobDetailCopyIdBtn" role="menuitem">
+                    Copy job ID
+                  </button>
+                  <button type="button" class="job-detail-overflow-item job-detail-overflow-item--danger" id="deleteJobBtn" role="menuitem">
+                    Delete job
+                  </button>
+                </div>
+              </details>
             </div>
           </div>
           <div class="job-detail-scroll">
@@ -477,6 +519,6 @@
       </main>
     </div>
 
-    <script src="app.js?v=chainmq-ui-21"></script>
+    <script src="app.js?v=chainmq-ui-23"></script>
   </body>
 </html>

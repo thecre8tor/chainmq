@@ -27,6 +27,18 @@ struct JobListResponse {
 }
 
 #[derive(Serialize)]
+struct JobLogLineDto {
+    ts: String,
+    level: String,
+    message: String,
+}
+
+#[derive(Serialize)]
+struct JobLogsResponse {
+    lines: Vec<JobLogLineDto>,
+}
+
+#[derive(Serialize)]
 struct QueueListResponse {
     queues: Vec<String>,
 }
@@ -141,6 +153,16 @@ async fn get_job(state: web::Data<AppState>, path: web::Path<String>) -> ActixRe
             "error": e.to_string()
         }))),
     }
+}
+
+async fn get_job_logs(path: web::Path<String>) -> ActixResult<HttpResponse> {
+    let job_id_str = path.into_inner();
+    if job_id_str.parse::<uuid::Uuid>().is_err() {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Invalid job ID format"
+        })));
+    }
+    Ok(HttpResponse::Ok().json(JobLogsResponse { lines: vec![] }))
 }
 
 // API: Retry a failed job
@@ -364,6 +386,7 @@ async fn main() -> std::io::Result<()> {
                 "/api/queues/{queue_name}/jobs/{state}",
                 web::get().to(list_jobs),
             )
+            .route("/api/jobs/{job_id}/logs", web::get().to(get_job_logs))
             .route("/api/jobs/{job_id}", web::get().to(get_job))
             .route("/api/jobs/{job_id}/retry", web::post().to(retry_job))
             .route("/api/jobs/{job_id}/delete", web::delete().to(delete_job))

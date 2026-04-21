@@ -47,6 +47,294 @@ let jobDetailActive = false;
 /** @type {object | null} */
 let detailJob = null;
 
+const JOB_DETAIL_AUTO_KEY = "chainmq-job-detail-auto-refresh";
+let jobDetailLastFetchedAt = null;
+let jobDetailRelativeTimer = 0;
+/** @type {"details" | "logs"} */
+let jobDetailSelectedTab = "details";
+
+function getJobDetailAutoRefresh() {
+  const v = localStorage.getItem(JOB_DETAIL_AUTO_KEY);
+  if (v === null) return true;
+  return v !== "0";
+}
+
+function setJobDetailAutoRefresh(on) {
+  localStorage.setItem(JOB_DETAIL_AUTO_KEY, on ? "1" : "0");
+}
+
+function stopJobDetailRelativeTimer() {
+  if (jobDetailRelativeTimer) {
+    window.clearInterval(jobDetailRelativeTimer);
+    jobDetailRelativeTimer = 0;
+  }
+}
+
+function startJobDetailRelativeTimer() {
+  stopJobDetailRelativeTimer();
+  jobDetailRelativeTimer = window.setInterval(updateJobDetailUpdatedLabel, 1000);
+}
+
+function touchJobDetailFetched() {
+  jobDetailLastFetchedAt = Date.now();
+  updateJobDetailUpdatedLabel();
+  if (jobDetailActive) {
+    startJobDetailRelativeTimer();
+  }
+}
+
+function updateJobDetailUpdatedLabel() {
+  const el = document.getElementById("jobDetailUpdatedLabel");
+  if (!el) return;
+  if (!jobDetailLastFetchedAt) {
+    el.textContent = "Updated —";
+    return;
+  }
+  const sec = Math.max(0, Math.floor((Date.now() - jobDetailLastFetchedAt) / 1000));
+  el.textContent =
+    sec < 1 ? "Updated just now" : `Updated ${sec}s ago`;
+}
+
+function updateJobDetailToolbarMeta(job) {
+  const wrap = document.getElementById("jobDetailToolbarMeta");
+  const nameEl = document.getElementById("jobDetailToolbarName");
+  const idEl = document.getElementById("jobDetailToolbarId");
+  if (!wrap || !nameEl || !idEl) return;
+  wrap.hidden = false;
+  nameEl.textContent = job.name ?? "";
+  const jid = String(job.id ?? "");
+  idEl.textContent = jid ? truncateMiddle(jid, 8, 6) : "";
+  idEl.title = jid;
+}
+
+function hideJobDetailToolbarMeta() {
+  const wrap = document.getElementById("jobDetailToolbarMeta");
+  if (wrap) wrap.hidden = true;
+}
+
+/** @param {string | null | undefined} iso */
+function formatClockFromIso(iso) {
+  if (iso == null) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+/** Readable date+time for lifecycle nodes (e.g. "Apr 21, 2:01:30 PM"). */
+/** @param {string | null | undefined} iso */
+function formatLifecycleWhen(iso) {
+  if (iso == null) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+/** @param {string | null | undefined} iso */
+function parseIsoMs(iso) {
+  if (iso == null) return NaN;
+  const n = new Date(iso).getTime();
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function truncateText(s, max) {
+  const str = String(s);
+  if (str.length <= max) return str;
+  return str.slice(0, max - 1) + "…";
+}
+
+/** @param {unknown} b */
+function formatBackoffHuman(b) {
+  if (!b || typeof b !== "object") return "—";
+  const o = /** @type {Record<string, Record<string, number>>} */ (b);
+  if (o.Fixed) return `Fixed (${o.Fixed.seconds}s)`;
+  if (o.Exponential)
+    return `Exponential (base ${o.Exponential.base}, cap ${o.Exponential.cap}s)`;
+  if (o.Linear)
+    return `Linear (+${o.Linear.increment}s, cap ${o.Linear.cap}s)`;
+  return truncateText(JSON.stringify(b), 120);
+}
+
+/** @param {object} job */
+function renderOptionsKvHtml(job) {
+  const o = job.options ?? {};
+  const delay =
+    o.delay_secs != null && o.delay_secs !== "" ? `${o.delay_secs}s` : "None";
+  const pri = o.priority != null ? String(o.priority) : "—";
+  const retries = o.attempts != null ? String(o.attempts) : "—";
+  const backoff = formatBackoffHuman(o.backoff);
+  const timeout =
+    o.timeout_secs != null ? `${o.timeout_secs}s` : null;
+  /** @type {[string, string][]} */
+  const rows = [
+    ["Delay", delay],
+    ["Priority", pri],
+    ["Retries", retries],
+    ["Backoff", backoff],
+  ];
+  if (timeout != null) rows.push(["Timeout", timeout]);
+  if (o.rate_limit_key != null && o.rate_limit_key !== "")
+    rows.push(["Rate limit key", String(o.rate_limit_key)]);
+  const fifoHint =
+    "Priority is reserved; the wait queue is FIFO for now.";
+  return rows
+    .map(([k, v]) => {
+      const hintTitle = k === "Priority" ? ` title="${escapeAttr(fifoHint)}"` : "";
+      const hintClass = k === "Priority" ? " job-detail-kv-row--priority-hint" : "";
+      return `<div class="job-detail-kv-row${hintClass}"${hintTitle}><span class="job-detail-kv-k">${escapeHtml(k)}</span><span class="job-detail-kv-v">${escapeHtml(String(v))}</span></div>`;
+    })
+    .join("");
+}
+
+/** @param {unknown} payload */
+function renderPayloadStructuredHtml(payload) {
+  if (payload == null)
+    return '<p class="job-detail-muted">No payload</p>';
+  if (typeof payload !== "object" || Array.isArray(payload)) {
+    const kind = Array.isArray(payload)
+      ? `Array · ${payload.length} items`
+      : typeof payload;
+    return `<p class="job-detail-payload-summary">${escapeHtml(kind)}</p><p class="job-detail-hint">Use <strong>View JSON</strong> for the full value.</p>`;
+  }
+  const keys = Object.keys(payload);
+  if (keys.length === 0)
+    return '<p class="job-detail-muted">Empty object</p>';
+  const max = 32;
+  const slice = keys.slice(0, max);
+  const body = slice
+    .map((k) => {
+      const v = /** @type {Record<string, unknown>} */ (payload)[k];
+      let display;
+      if (v === null) display = "null";
+      else if (Array.isArray(v)) display = `Array(${v.length})`;
+      else if (typeof v === "object") display = "{…}";
+      else if (typeof v === "string") display = truncateText(v, 200);
+      else display = String(v);
+      return `<div class="job-detail-kv-row"><span class="job-detail-kv-k">${escapeHtml(k)}</span><span class="job-detail-kv-v">${escapeHtml(display)}</span></div>`;
+    })
+    .join("");
+  const more =
+    keys.length > max
+      ? `<p class="job-detail-hint">+ ${keys.length - max} more keys — open JSON view.</p>`
+      : "";
+  return `<div class="job-detail-kv">${body}</div>${more}`;
+}
+
+/** @param {object} job */
+function buildRunSummaryLine(job) {
+  const state = String(job.state);
+  const attempts = job.attempts;
+  const maxA = job.options && job.options.attempts != null ? job.options.attempts : "—";
+  const created = parseIsoMs(job.created_at);
+  const end =
+    parseIsoMs(job.failed_at) ||
+    parseIsoMs(job.completed_at) ||
+    NaN;
+  const wall =
+    Number.isFinite(created) && Number.isFinite(end)
+      ? formatDurationMs(end - created)
+      : "—";
+
+  let outcome = "";
+  if (state === "Failed") {
+    outcome = job.last_error
+      ? truncateText(String(job.last_error), 96)
+      : "Failed";
+  } else if (state === "Completed") {
+    outcome =
+      job.response != null
+        ? "Returned JSON response"
+        : "Completed without output";
+  } else if (state === "Active") {
+    outcome = "In progress";
+  } else if (state === "Waiting" || state === "Delayed") {
+    outcome = "Not started yet";
+  } else if (state === "Paused") {
+    outcome = "Paused";
+  } else {
+    outcome = state;
+  }
+
+  const attemptBit = `${attempts} / ${maxA} attempts`;
+  return `${outcome} · Wall ${wall} · ${attemptBit}`;
+}
+
+function jobDetailCloseOverflowMenu() {
+  const d = document.getElementById("jobDetailOverflow");
+  if (d) d.open = false;
+}
+
+async function fetchJobLogs(jobId) {
+  const response = await fetch(
+    `${API_BASE}/jobs/${encodeURIComponent(jobId)}/logs?limit=200`,
+  );
+  if (response.status === 404) {
+    return { ok: true, lines: [] };
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `HTTP ${response.status}`);
+  }
+  const data = await response.json().catch(() => ({}));
+  const lines = Array.isArray(data.lines) ? data.lines : [];
+  return { ok: true, lines };
+}
+
+function switchJobDetailTab(which) {
+  jobDetailSelectedTab = which === "logs" ? "logs" : "details";
+  const detailsBtn = document.getElementById("jobDetailTabDetails");
+  const logsBtn = document.getElementById("jobDetailTabLogs");
+  const detailsPanel = document.getElementById("jobDetailPanelDetails");
+  const logsPanel = document.getElementById("jobDetailPanelLogs");
+  if (!detailsBtn || !logsBtn || !detailsPanel || !logsPanel) return;
+  const showLogs = jobDetailSelectedTab === "logs";
+  detailsBtn.setAttribute("aria-selected", (!showLogs).toString());
+  logsBtn.setAttribute("aria-selected", showLogs.toString());
+  detailsPanel.hidden = showLogs;
+  logsPanel.hidden = !showLogs;
+  if (showLogs) logsBtn.focus();
+}
+
+async function loadJobLogsPanel(jobId) {
+  const body = document.getElementById("jobDetailLogsBody");
+  if (!body) return;
+  body.innerHTML =
+    '<p class="job-detail-logs-loading job-detail-muted">Loading logs…</p>';
+  try {
+    const { lines } = await fetchJobLogs(jobId);
+    if (!lines.length) {
+      body.innerHTML = `
+        <div class="job-detail-logs-empty" role="status">
+          <div class="job-detail-logs-empty-icon" aria-hidden="true">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h6"/><path d="M8 17h4"/></svg>
+          </div>
+          <p class="job-detail-logs-empty-lead">No log lines for this job yet</p>
+          <p class="job-detail-logs-empty-copy">Connect your worker or logging pipeline to <code class="job-detail-inline-code">GET …/jobs/{id}/logs</code>, or check server stdout while jobs run.</p>
+        </div>`;
+      return;
+    }
+    body.innerHTML = lines
+      .map((line) => {
+        const ts = escapeHtml(line.ts ?? "—");
+        const level = escapeHtml(String(line.level ?? "info"));
+        const msg = escapeHtml(String(line.message ?? ""));
+        return `<div class="job-detail-log-line job-detail-log-line--${level.toLowerCase()}"><span class="job-detail-log-ts">${ts}</span><span class="job-detail-log-level">${level}</span><span class="job-detail-log-msg">${msg}</span></div>`;
+      })
+      .join("");
+  } catch (e) {
+    body.innerHTML = `<p class="job-detail-error">${escapeHtml("Could not load logs: " + e.message)}</p>`;
+  }
+}
+
 function escapeAttr(value) {
   return String(value)
     .replace(/&/g, "&amp;")
@@ -221,10 +509,20 @@ document.addEventListener("DOMContentLoaded", () => {
   loadQueues();
   setupEventListeners();
 
+  const autoCb = document.getElementById("jobDetailAutoRefresh");
+  if (autoCb) {
+    autoCb.checked = getJobDetailAutoRefresh();
+    autoCb.addEventListener("change", (e) => {
+      setJobDetailAutoRefresh(/** @type {HTMLInputElement} */ (e.target).checked);
+    });
+  }
+
   // Auto-refresh every 3 seconds
   setInterval(() => {
     if (jobDetailActive && currentJobId) {
-      loadJobDetailPageContent({ silent: true });
+      if (getJobDetailAutoRefresh()) {
+        void loadJobDetailPageContent({ silent: true });
+      }
     } else if (currentQueue) {
       loadQueueStats();
       loadJobs();
@@ -340,7 +638,38 @@ function setupEventListeners() {
   document
     .getElementById("jobDetailBackBtn")
     .addEventListener("click", () => closeJobDetailPage());
-  document.getElementById("copyJobLinkBtn")?.addEventListener("click", copyJobDetailLink);
+  document
+    .getElementById("jobDetailCopyLinkBtn")
+    ?.addEventListener("click", () => {
+      jobDetailCloseOverflowMenu();
+      copyJobDetailLink();
+    });
+  document.getElementById("jobDetailCopyIdBtn")?.addEventListener("click", () => {
+    jobDetailCloseOverflowMenu();
+    const id = detailJob?.id ?? currentJobId;
+    if (id == null) return;
+    const btn = document.getElementById("jobDetailCopyIdBtn");
+    void navigator.clipboard.writeText(String(id)).then(
+      () => {
+        btn?.classList.add("job-detail-copied");
+        window.setTimeout(() => btn?.classList.remove("job-detail-copied"), 1600);
+      },
+      () => {},
+    );
+  });
+  document.getElementById("jobDetailRefreshBtn")?.addEventListener("click", () => {
+    if (jobDetailActive && currentJobId) {
+      void loadJobDetailPageContent({ silent: true });
+    }
+  });
+
+  document.addEventListener("click", (e) => {
+    const ov = document.getElementById("jobDetailOverflow");
+    if (!ov || !ov.open) return;
+    const t = /** @type {Node} */ (e.target);
+    if (ov.contains(t)) return;
+    ov.open = false;
+  });
 
   const selectAllCb = document.getElementById("selectAllJobsCheckbox");
   if (selectAllCb) {
@@ -389,6 +718,41 @@ function setupEventListeners() {
   });
 
   document.getElementById("job-detail-view")?.addEventListener("click", (e) => {
+    const tabBtn = e.target.closest("[data-job-tab]");
+    if (tabBtn) {
+      e.preventDefault();
+      const tab = tabBtn.getAttribute("data-job-tab");
+      if (tab === "logs" || tab === "details") {
+        switchJobDetailTab(tab);
+        if (tab === "logs" && currentJobId) void loadJobLogsPanel(currentJobId);
+      }
+      return;
+    }
+    const modeBtn = e.target.closest("[data-json-mode-toggle]");
+    if (modeBtn) {
+      e.preventDefault();
+      const id = modeBtn.getAttribute("data-json-mode-toggle");
+      const host = document.querySelector(`[data-json-mode-section="${id}"]`);
+      if (host) {
+        const on = host.classList.toggle("job-detail-show-json");
+        modeBtn.textContent = on ? "View fields" : "View JSON";
+        modeBtn.setAttribute("aria-pressed", on ? "true" : "false");
+      }
+      return;
+    }
+    const logsCta = e.target.closest("[data-focus-tab='logs']");
+    if (logsCta) {
+      e.preventDefault();
+      switchJobDetailTab("logs");
+      if (currentJobId) void loadJobLogsPanel(currentJobId);
+      return;
+    }
+    const retryFromEmpty = e.target.closest('[data-action="retry-from-empty"]');
+    if (retryFromEmpty) {
+      e.preventDefault();
+      document.getElementById("retryJobBtn")?.click();
+      return;
+    }
     const copyBtn = e.target.closest("[data-copy-text], .job-detail-copy-json");
     if (!copyBtn) return;
     let text = copyBtn.getAttribute("data-copy-text");
@@ -757,6 +1121,8 @@ async function openJobDetailPage(queueName, jobId, opts = {}) {
     return;
   }
 
+  jobDetailSelectedTab = "details";
+
   if (!opts.fromHash) {
     window.location.hash = jobRouteHash(queueName, jobId);
   }
@@ -815,6 +1181,12 @@ async function loadJobDetailPageContent({ silent }) {
     }
 
     renderJobDetailPage(job);
+    touchJobDetailFetched();
+    updateJobDetailToolbarMeta(job);
+    switchJobDetailTab(jobDetailSelectedTab);
+    if (jobDetailSelectedTab === "logs") {
+      void loadJobLogsPanel(job.id);
+    }
     const retryBtn = document.getElementById("retryJobBtn");
     if (retryBtn) {
       retryBtn.style.display = job.state === "Failed" ? "inline-flex" : "none";
@@ -833,6 +1205,197 @@ async function loadJobDetailPageContent({ silent }) {
   }
 }
 
+/** @param {object} job */
+function renderJobExecutionMetadata(job) {
+  const attemptMax =
+    job.options && job.options.attempts != null ? job.options.attempts : "—";
+  const cur = job.attempts;
+  const copySvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+  const workerRow = job.worker_id
+    ? `<div class="job-detail-meta-row"><span class="job-detail-meta-label">Worker</span><span class="job-detail-meta-val"><span class="job-detail-mono-clip">${escapeHtml(truncateMiddle(String(job.worker_id), 10, 6))}</span><button type="button" class="job-detail-copy-chip job-detail-copy-chip--ghost" data-copy-text="${escapeAttr(String(job.worker_id))}" aria-label="Copy worker ID" title="Copy full ID">${copySvg}</button></span></div>`
+    : `<div class="job-detail-meta-row"><span class="job-detail-meta-label">Worker</span><span class="job-detail-meta-val job-detail-muted">—</span></div>`;
+  const err = job.last_error
+    ? `<div class="job-detail-meta-row job-detail-meta-row--error"><span class="job-detail-meta-label">Last error</span><div class="job-detail-error-box">${escapeHtml(job.last_error)}</div></div>`
+    : "";
+  return `<div class="job-detail-exec-metadata">
+    <p class="job-detail-exec-metadata-eyebrow">Run metadata</p>
+    <div class="job-detail-exec-metadata-inner">
+      ${workerRow}
+      <div class="job-detail-meta-row job-detail-meta-row--attempts"><span class="job-detail-meta-label">Attempts</span><p class="job-detail-meta-attempts" aria-label="Attempts used"><span class="job-detail-meta-attempts-num">${escapeHtml(String(cur))}</span><span class="job-detail-meta-attempts-sep">/</span><span class="job-detail-meta-attempts-den">${escapeHtml(String(attemptMax))}</span></p></div>
+      ${err}
+    </div>
+  </div>`;
+}
+
+/** @param {object} job */
+function renderResponseEmptyState(job) {
+  const state = String(job.state);
+  let lead = "No response was returned for this job";
+  /** @type {string} */
+  let bodyHtml =
+    "<span>Response appears when a worker finishes and sets output.</span>";
+  if (state === "Completed") {
+    lead = "This job completed without output";
+    bodyHtml =
+      'Attach JSON with <code class="job-detail-inline-code">JobContext::set_response</code> before the job finishes successfully.';
+  } else if (state === "Failed") {
+    lead = "No response payload";
+    bodyHtml =
+      "See <strong>Last error</strong> in execution metadata, or open logs for details.";
+  } else if (state === "Active") {
+    lead = "No response yet";
+    bodyHtml = "The worker has not finished this job.";
+  } else if (state === "Waiting" || state === "Delayed") {
+    lead = "No response yet";
+    bodyHtml = "This job has not completed.";
+  }
+  const retryBtn =
+    state === "Failed"
+      ? `<button type="button" class="btn btn-success btn-sm" data-action="retry-from-empty">Retry job</button>`
+      : "";
+  const tone = String(job.state).toLowerCase();
+  return `<div class="job-detail-card job-detail-card--lift job-detail-card--response job-detail-card--response-empty job-detail-card--response-hero job-detail-card--response-tone-${escapeHtml(tone)}">
+    <div class="job-detail-block-head">
+      <h3 class="job-detail-block-head__title">Response</h3>
+    </div>
+    <div class="job-detail-response-placeholder-body job-detail-response-placeholder-body--centered">
+      <div class="job-detail-response-empty-state" role="note">
+        <div class="job-detail-response-empty-icon" aria-hidden="true">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 11v6"/><path d="M12 18h.01"/></svg>
+        </div>
+        <p class="job-detail-response-empty-lead">${escapeHtml(lead)}</p>
+        <p class="job-detail-response-empty">${bodyHtml}</p>
+        <div class="job-detail-empty-ctas">
+          <button type="button" class="btn btn-secondary btn-sm" data-focus-tab="logs">View logs</button>
+          ${retryBtn}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/** @param {object} job */
+function renderLifecycleCard(job) {
+  const created = parseIsoMs(job.created_at);
+  const started = parseIsoMs(job.started_at);
+  const completed = parseIsoMs(job.completed_at);
+  const failed = parseIsoMs(job.failed_at);
+  const end = Number.isFinite(completed)
+    ? completed
+    : Number.isFinite(failed)
+      ? failed
+      : NaN;
+  const isFailEnd = Number.isFinite(failed) && !Number.isFinite(completed);
+
+  const wallMs =
+    Number.isFinite(created) && Number.isFinite(end) ? end - created : NaN;
+  const waitMs =
+    Number.isFinite(created) && Number.isFinite(started)
+      ? started - created
+      : NaN;
+  const runMs =
+    Number.isFinite(started) && Number.isFinite(end) ? end - started : NaN;
+
+  const iconClock = `<svg class="job-detail-mile-ic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`;
+  const iconGear = `<svg class="job-detail-mile-ic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>`;
+  const iconCheck = `<svg class="job-detail-mile-ic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>`;
+  const iconFail = `<svg class="job-detail-mile-ic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>`;
+
+  const milestones = [
+    {
+      id: "c",
+      label: "Created",
+      done: Number.isFinite(created),
+      timeLabel: formatLifecycleWhen(job.created_at),
+      icon: iconClock,
+    },
+    {
+      id: "s",
+      label: "Started",
+      done: Number.isFinite(started),
+      timeLabel: formatLifecycleWhen(job.started_at),
+      icon: iconGear,
+    },
+    {
+      id: "f",
+      label: isFailEnd ? "Failed" : "Finished",
+      done: Number.isFinite(end),
+      fail: Boolean(isFailEnd && Number.isFinite(end)),
+      timeLabel: formatLifecycleWhen(
+        isFailEnd ? job.failed_at : job.completed_at,
+      ),
+      icon: isFailEnd ? iconFail : iconCheck,
+    },
+  ];
+
+  let milestoneRow = "";
+  for (let i = 0; i < milestones.length; i++) {
+    const m = milestones[i];
+    const failClass = m.fail && m.done ? " job-detail-te-mile--fail" : "";
+    const emoji =
+      m.done && m.fail ? "✖" : m.done ? "✔" : "⏱";
+    milestoneRow += `<div class="job-detail-te-mile ${m.done ? "job-detail-te-mile--done" : ""}${failClass}" data-mile="${m.id}">
+      <span class="job-detail-te-mile-icon" aria-hidden="true">${m.icon}</span>
+      <span class="job-detail-te-mile-label"><span class="job-detail-te-mile-emoji" aria-hidden="true">${emoji}</span>${escapeHtml(m.label)}</span>
+      <span class="job-detail-te-mile-time">${escapeHtml(m.timeLabel)}</span>
+    </div>`;
+    if (i < milestones.length - 1) {
+      const lit = milestones[i].done && milestones[i + 1].done;
+      const dangerConn = lit && milestones[i + 1].fail;
+      milestoneRow += `<div class="job-detail-te-mile-conn${lit ? " job-detail-te-mile-conn--lit" : ""}${dangerConn ? " job-detail-te-mile-conn--danger" : ""}" aria-hidden="true"></div>`;
+    }
+  }
+
+  const durVal = (ms) =>
+    Number.isFinite(ms)
+      ? `<strong>${escapeHtml(formatDurationMs(ms))}</strong>`
+      : `<span class="job-detail-te-dur-na">—</span>`;
+
+  const attemptCur = Number(job.attempts);
+  const attemptCurSafe =
+    Number.isFinite(attemptCur) && attemptCur >= 0 ? attemptCur : 0;
+  const attemptMaxRaw = job.options && job.options.attempts;
+  const attemptMax =
+    typeof attemptMaxRaw === "number" && attemptMaxRaw > 0
+      ? Math.min(attemptMaxRaw, 24)
+      : null;
+
+  let attemptsViz = "";
+  if (attemptMax != null) {
+    const slots = [];
+    for (let i = 1; i <= attemptMax; i++) {
+      slots.push(
+        `<span class="job-detail-te-slot ${i <= attemptCurSafe ? "job-detail-te-slot--used" : ""}" title="Attempt ${i}" aria-hidden="true"></span>`,
+      );
+    }
+    attemptsViz = `<div class="job-detail-te-attempts-viz">
+      <span class="job-detail-te-foot-eyebrow">Retry budget</span>
+      <div class="job-detail-te-slots">${slots.join("")}</div>
+      <span class="job-detail-te-slots-hint">${escapeHtml(String(attemptCurSafe))} of ${escapeHtml(String(attemptMax))} attempts recorded</span>
+    </div>`;
+  }
+
+  const foot = `<div class="job-detail-te-foot job-detail-te-foot--card">
+    <div class="job-detail-te-foot-strip">
+      <span class="job-detail-te-foot-eyebrow">Lifecycle</span>
+      <div class="job-detail-te-milestone-row job-detail-te-milestone-row--timeline" role="presentation" aria-label="Job lifecycle">${milestoneRow}</div>
+    </div>
+    <div class="job-detail-te-durations">
+      <div class="job-detail-te-dur"><span class="job-detail-te-dur-k">Wall time</span>${durVal(wallMs)}</div>
+      <div class="job-detail-te-dur"><span class="job-detail-te-dur-k">Queue wait</span>${durVal(waitMs)}</div>
+      <div class="job-detail-te-dur"><span class="job-detail-te-dur-k">Run time</span>${durVal(runMs)}</div>
+    </div>
+    ${attemptsViz}
+  </div>`;
+
+  return `<div class="job-detail-card job-detail-card--lift job-detail-card--lifecycle">
+    <div class="job-detail-block-head">
+      <h3 class="job-detail-block-head__title">Lifecycle</h3>
+    </div>
+    <div class="job-detail-lifecycle-body">${foot}</div>
+  </div>`;
+}
+
 function renderJobDetailPage(job) {
   const container = document.getElementById("jobDetailContent");
   if (!container) return;
@@ -840,28 +1403,7 @@ function renderJobDetailPage(job) {
   const stateClass = String(job.state).toLowerCase();
   const jid = String(job.id);
   const jidShort = truncateMiddle(jid, 10, 8);
-
-  const attemptMax =
-    job.options && job.options.attempts != null ? job.options.attempts : "—";
-
-  /** @type {[string, string][]} */
-  const execution = [
-    ["Attempts (current / max)", escapeHtml(`${job.attempts} / ${attemptMax}`)],
-  ];
-  if (job.worker_id) {
-    const wid = String(job.worker_id);
-    const widShort = escapeHtml(truncateMiddle(wid, 10, 6));
-    execution.push([
-      "Worker",
-      `<span class="job-detail-mono-clip">${widShort}</span><button type="button" class="job-detail-copy-chip" data-copy-text="${escapeAttr(wid)}" aria-label="Copy worker ID" title="Copy full ID"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>`,
-    ]);
-  }
-  if (job.last_error) {
-    execution.push([
-      "Last error",
-      `<div class="job-detail-error-box">${escapeHtml(job.last_error)}</div>`,
-    ]);
-  }
+  const pulseClass = stateClass === "completed" ? " job-state-badge--pulse" : "";
 
   const optionsJson = JSON.stringify(job.options ?? {}, null, 2);
   const payloadJson = JSON.stringify(job.payload ?? {}, null, 2);
@@ -869,93 +1411,125 @@ function renderJobDetailPage(job) {
   const responseJson = hasResponse
     ? JSON.stringify(job.response, null, 2)
     : "";
-  const showCompletedNoResponse =
-    !hasResponse && String(job.state).toLowerCase() === "completed";
-
-  const renderTimingExecutionPanel = (executionRows, jobRef) => {
-    const statsHtml = renderExecutionStatsHtml(executionRows);
-    if (!statsHtml && !jobRef) return "";
-    const footerHtml = jobRef ? renderTimingInsightFooter(jobRef) : "";
-    return `
-      <div class="job-detail-panel job-detail-panel--timing job-detail-panel--timing-execution">
-        <div class="job-detail-block-head">
-          <h3 class="job-detail-block-head__title">Timing &amp; execution</h3>
-        </div>
-        <div class="job-detail-te-body">
-          <div class="job-detail-te-core">
-            ${statsHtml}
-          </div>
-          ${footerHtml}
-        </div>
-      </div>`;
-  };
 
   const copyIconSvg = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
 
-  const codeSection = (title, field, jsonStr, sectionExtraClass = "", jsonToneClass = "") => {
-    const extra = sectionExtraClass ? ` ${sectionExtraClass}` : "";
-    const tone = jsonToneClass ? ` ${jsonToneClass}` : "";
-    const codeInner = jsonStr === "" ? "" : highlightJsonToHtml(jsonStr);
-    return `
-    <div class="job-detail-section job-detail-section-code${extra}">
-      <div class="job-detail-code-toolbar job-detail-block-head">
-        <h3 class="job-detail-block-head__title">${escapeHtml(title)}</h3>
-        <div class="job-detail-block-head__actions">
-          <button type="button" class="job-detail-copy-json job-detail-icon-copy" data-copy-job-json="${field}" aria-label="Copy ${escapeAttr(title)} as JSON" title="Copy JSON">${copyIconSvg}</button>
-        </div>
-      </div>
-      <div class="job-detail-json${tone}"><pre><code class="job-detail-code job-detail-code--highlighted">${codeInner}</code></pre></div>
-    </div>`;
-  };
-
-  const timingExecPanel = renderTimingExecutionPanel(execution, job);
+  const responseIsPlainObject =
+    hasResponse &&
+    job.response !== null &&
+    typeof job.response === "object" &&
+    !Array.isArray(job.response);
+  const responseStructured = responseIsPlainObject
+    ? renderPayloadStructuredHtml(job.response)
+    : "";
 
   const responseBlock = hasResponse
-    ? `<div class="job-detail-body__cell job-detail-response-wrap">${codeSection("Response", "response", responseJson, "job-detail-section-code--detail-col", "job-detail-json--tone-response")}</div>`
-    : showCompletedNoResponse
-      ? `<div class="job-detail-body__cell">
-          <div class="job-detail-panel job-detail-panel--placeholder job-detail-panel--response-placeholder">
-            <div class="job-detail-block-head">
-              <h3 class="job-detail-block-head__title">Response</h3>
-            </div>
-            <div class="job-detail-response-placeholder-body">
-            <div class="job-detail-response-empty-state" role="note">
-              <div class="job-detail-response-empty-icon" aria-hidden="true">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h6"/><path d="M8 17h4"/></svg>
-              </div>
-              <p class="job-detail-response-empty-lead">No worker response yet</p>
-              <p class="job-detail-response-empty">Completed jobs can include JSON from <code class="job-detail-inline-code">JobContext::set_response</code> before the job finishes successfully.</p>
-            </div>
-            </div>
-          </div>
-        </div>`
-      : "";
+    ? responseIsPlainObject
+      ? `<div class="job-detail-card job-detail-card--lift job-detail-card--response job-detail-card--response-hero">
+    <div class="job-detail-block-head">
+      <h3 class="job-detail-block-head__title">Response</h3>
+      <div class="job-detail-block-head__actions">
+        <button type="button" class="btn btn-ghost btn-sm job-detail-json-mode-btn" data-json-mode-toggle="response" aria-pressed="false">View JSON</button>
+        <button type="button" class="job-detail-copy-json job-detail-icon-copy" data-copy-job-json="response" aria-label="Copy Response as JSON" title="Copy JSON">${copyIconSvg}</button>
+      </div>
+    </div>
+    <div class="job-detail-card-body">
+      <div data-json-mode-section="response" class="job-detail-duotone">
+        <div class="job-detail-struct-wrap">${responseStructured}</div>
+        <div class="job-detail-json-wrap"><div class="job-detail-json job-detail-json--tone-response"><pre><code class="job-detail-code job-detail-code--highlighted">${highlightJsonToHtml(responseJson)}</code></pre></div></div>
+      </div>
+    </div>
+  </div>`
+      : `<div class="job-detail-card job-detail-card--lift job-detail-card--response job-detail-card--response-hero">
+    <div class="job-detail-block-head">
+      <h3 class="job-detail-block-head__title">Response</h3>
+      <div class="job-detail-block-head__actions">
+        <button type="button" class="job-detail-copy-json job-detail-icon-copy" data-copy-job-json="response" aria-label="Copy Response as JSON" title="Copy JSON">${copyIconSvg}</button>
+      </div>
+    </div>
+    <div class="job-detail-response-body-json"><div class="job-detail-json job-detail-json--tone-response job-detail-json--in-card"><pre><code class="job-detail-code job-detail-code--highlighted">${highlightJsonToHtml(responseJson)}</code></pre></div></div>
+  </div>`
+    : renderResponseEmptyState(job);
 
-  const payloadCellClass = responseBlock
-    ? "job-detail-body__cell"
-    : "job-detail-body__cell job-detail-body__cell--full";
+  const lifecycleCard = renderLifecycleCard(job);
+  const execMetadata = renderJobExecutionMetadata(job);
+  const optionsStructured = renderOptionsKvHtml(job);
+  const payloadStructured = renderPayloadStructuredHtml(job.payload);
 
   container.innerHTML = `
-    <div class="job-detail-hero">
-      <div class="job-detail-hero-top">
-        <h2 class="job-detail-title">${escapeHtml(job.name)}</h2>
-        <div class="job-detail-pills">
-          <span class="job-state-badge ${escapeHtml(stateClass)}">${escapeHtml(String(job.state))}</span>
-          <span class="job-detail-queue-pill"><span class="job-detail-queue-pill-label">Queue</span> ${escapeHtml(job.queue_name)}</span>
+  <div class="job-detail-shell">
+    <div class="job-detail-tablist" role="tablist" aria-label="Job views">
+      <button type="button" class="job-detail-tab" role="tab" id="jobDetailTabDetails" data-job-tab="details" aria-selected="true" aria-controls="jobDetailPanelDetails">Details</button>
+      <button type="button" class="job-detail-tab" role="tab" id="jobDetailTabLogs" data-job-tab="logs" aria-selected="false" aria-controls="jobDetailPanelLogs">Logs</button>
+    </div>
+
+    <div id="jobDetailPanelDetails" class="job-detail-tabpanel" role="tabpanel" aria-labelledby="jobDetailTabDetails">
+      <div class="job-detail-hero job-detail-hero--v2 job-detail-hero--state-${escapeHtml(stateClass)}">
+        <div class="job-detail-hero-accent" aria-hidden="true"></div>
+        <div class="job-detail-hero-row job-detail-hero-row--primary">
+          <h2 class="job-detail-hero-title">${escapeHtml(job.name)}</h2>
+          <span class="job-state-badge job-state-badge--hero${pulseClass} ${escapeHtml(stateClass)}">${escapeHtml(String(job.state))}</span>
+        </div>
+        <p class="job-detail-run-summary job-detail-hero-summary">${escapeHtml(buildRunSummaryLine(job))}</p>
+        <div class="job-detail-hero-row job-detail-hero-row--tertiary">
+          <span class="job-detail-hero-tertiary-label">Queue</span>
+          <span class="job-detail-hero-tertiary-val">${escapeHtml(job.queue_name)}</span>
+          <span class="job-detail-hero-tertiary-dot" aria-hidden="true">·</span>
+          <code class="job-detail-hero-tertiary-id" title="${escapeAttr(jid)}">${escapeHtml(jidShort)}</code>
+          <button type="button" class="job-detail-copy-chip job-detail-copy-chip--mini btn btn-secondary btn-sm" data-copy-text="${escapeAttr(jid)}" aria-label="Copy job ID" title="Copy full job ID">Copy</button>
         </div>
       </div>
-      <div class="job-detail-id-row">
-        <code class="job-detail-id-chip" title="${escapeAttr(jid)}">${escapeHtml(jidShort)}</code>
-        <button type="button" class="btn btn-secondary btn-sm job-detail-copy-chip" data-copy-text="${escapeAttr(jid)}" aria-label="Copy job ID" title="Copy full job ID">Copy ID</button>
+
+      <div class="job-detail-main-grid">
+        <div class="job-detail-col job-detail-col--primary">
+          ${responseBlock}
+          ${lifecycleCard}
+        </div>
+        <div class="job-detail-col job-detail-col--secondary">
+          <div class="job-detail-card job-detail-card--lift job-detail-card--execution">
+            <div class="job-detail-block-head">
+              <h3 class="job-detail-block-head__title">Execution</h3>
+              <div class="job-detail-block-head__actions">
+                <button type="button" class="btn btn-ghost btn-sm job-detail-json-mode-btn" data-json-mode-toggle="options" aria-pressed="false">View JSON</button>
+                <button type="button" class="job-detail-copy-json job-detail-icon-copy" data-copy-job-json="options" aria-label="Copy Execution options as JSON" title="Copy JSON">${copyIconSvg}</button>
+              </div>
+            </div>
+            <div class="job-detail-card-body-subtle">
+              <div data-json-mode-section="options" class="job-detail-duotone">
+                <div class="job-detail-struct-wrap job-detail-kv job-detail-kv--exec">${optionsStructured}</div>
+                <div class="job-detail-json-wrap"><div class="job-detail-json job-detail-json--tone-options"><pre><code class="job-detail-code job-detail-code--highlighted">${highlightJsonToHtml(optionsJson)}</code></pre></div></div>
+              </div>
+              <p class="job-detail-hint job-detail-hint--exec-foot">Hover <strong>Priority</strong> for the FIFO note.</p>
+            </div>
+            ${execMetadata}
+          </div>
+
+          <div class="job-detail-card job-detail-card--lift job-detail-card--payload">
+            <div class="job-detail-block-head">
+              <h3 class="job-detail-block-head__title">Payload</h3>
+              <div class="job-detail-block-head__actions">
+                <button type="button" class="btn btn-ghost btn-sm job-detail-json-mode-btn" data-json-mode-toggle="payload" aria-pressed="false">View JSON</button>
+                <button type="button" class="job-detail-copy-json job-detail-icon-copy" data-copy-job-json="payload" aria-label="Copy Payload as JSON" title="Copy JSON">${copyIconSvg}</button>
+              </div>
+            </div>
+            <div class="job-detail-card-body">
+              <div data-json-mode-section="payload" class="job-detail-duotone">
+                <div class="job-detail-struct-wrap">${payloadStructured}</div>
+                <div class="job-detail-json-wrap"><div class="job-detail-json job-detail-json--tone-payload"><pre><code class="job-detail-code job-detail-code--highlighted">${highlightJsonToHtml(payloadJson)}</code></pre></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
-    <div class="job-detail-body">
-      <div class="job-detail-body__cell">${timingExecPanel}</div>
-      <div class="job-detail-body__cell">${codeSection("Execution options", "options", optionsJson, "job-detail-section-code--scroll-col", "job-detail-json--tone-options")}</div>
-      <div class="${payloadCellClass}">${codeSection("Payload", "payload", payloadJson, "job-detail-section-code--detail-col", "job-detail-json--tone-payload")}</div>
-      ${responseBlock}
+
+    <div id="jobDetailPanelLogs" class="job-detail-tabpanel job-detail-tabpanel--logs" role="tabpanel" aria-labelledby="jobDetailTabLogs" hidden>
+      <div class="job-detail-logs-panel">
+        <p class="job-detail-logs-intro job-detail-muted">Inline log lines from your workers (when the API provides them).</p>
+        <div id="jobDetailLogsBody" class="job-detail-logs-body"></div>
+      </div>
     </div>
-  `;
+  </div>`;
 }
 
 function escapeHtml(value) {
@@ -986,117 +1560,6 @@ function highlightJsonToHtml(jsonStr) {
   return out;
 }
 
-/** @param {[string, string][]} executionRows */
-function renderExecutionStatsHtml(executionRows) {
-  if (!executionRows.length) return "";
-  const blocks = [];
-  for (const [key, valHtml] of executionRows) {
-    const k = key.toLowerCase();
-    if (k.includes("attempt")) {
-      const plain = valHtml.replace(/<[^>]*>/g, "").trim();
-      const parts = plain.split(/\s*\/\s*/);
-      const cur = escapeHtml(parts[0] ?? "—");
-      const max = escapeHtml(parts[1] ?? "—");
-      blocks.push(
-        `<div class="job-detail-te-stat job-detail-te-stat--attempts"><span class="job-detail-te-stat-label">Attempts</span><p class="job-detail-te-stat-display" aria-label="${escapeHtml(key)}"><span class="job-detail-te-stat-num">${cur}</span><span class="job-detail-te-stat-sep">/</span><span class="job-detail-te-stat-den">${max}</span></p></div>`,
-      );
-    } else if (k.includes("worker")) {
-      blocks.push(
-        `<div class="job-detail-te-stat job-detail-te-stat--worker"><span class="job-detail-te-stat-label">Worker</span><div class="job-detail-te-worker-row">${valHtml}</div></div>`,
-      );
-    } else {
-      blocks.push(
-        `<div class="job-detail-te-stat job-detail-te-stat--wide"><span class="job-detail-te-stat-label">${escapeHtml(key)}</span><div class="job-detail-te-stat-block">${valHtml}</div></div>`,
-      );
-    }
-  }
-  return `<div class="job-detail-te-stats">${blocks.join("")}</div>`;
-}
-
-/** @param {object} job */
-function renderTimingInsightFooter(job) {
-  const t = (iso) => {
-    if (iso == null) return NaN;
-    const n = new Date(iso).getTime();
-    return Number.isFinite(n) ? n : NaN;
-  };
-  const created = t(job.created_at);
-  const started = t(job.started_at);
-  const completed = t(job.completed_at);
-  const failed = t(job.failed_at);
-  const end = Number.isFinite(completed) ? completed : Number.isFinite(failed) ? failed : NaN;
-  const isFailEnd = Number.isFinite(failed) && !Number.isFinite(completed);
-
-  const wallMs = Number.isFinite(created) && Number.isFinite(end) ? end - created : NaN;
-  const waitMs = Number.isFinite(created) && Number.isFinite(started) ? started - created : NaN;
-  const runMs = Number.isFinite(started) && Number.isFinite(end) ? end - started : NaN;
-
-  const milestones = [
-    { id: "c", label: "Created", done: Number.isFinite(created) },
-    { id: "s", label: "Started", done: Number.isFinite(started) },
-    {
-      id: "f",
-      label: isFailEnd ? "Failed" : "Finished",
-      done: Number.isFinite(end),
-      fail: Boolean(isFailEnd && Number.isFinite(end)),
-    },
-  ];
-
-  let milestoneRow = "";
-  for (let i = 0; i < milestones.length; i++) {
-    const m = milestones[i];
-    const failClass = m.fail && m.done ? " job-detail-te-mile--fail" : "";
-    milestoneRow += `<div class="job-detail-te-mile ${m.done ? "job-detail-te-mile--done" : ""}${failClass}" data-mile="${m.id}">
-      <span class="job-detail-te-mile-dot" aria-hidden="true"></span>
-      <span class="job-detail-te-mile-label">${escapeHtml(m.label)}</span>
-    </div>`;
-    if (i < milestones.length - 1) {
-      const lit = milestones[i].done && milestones[i + 1].done;
-      const dangerConn = lit && milestones[i + 1].fail;
-      milestoneRow += `<div class="job-detail-te-mile-conn${lit ? " job-detail-te-mile-conn--lit" : ""}${dangerConn ? " job-detail-te-mile-conn--danger" : ""}" aria-hidden="true"></div>`;
-    }
-  }
-
-  const durVal = (ms) =>
-    Number.isFinite(ms)
-      ? `<strong>${escapeHtml(formatDurationMs(ms))}</strong>`
-      : `<span class="job-detail-te-dur-na">—</span>`;
-
-  const attemptCur = Number(job.attempts);
-  const attemptCurSafe = Number.isFinite(attemptCur) && attemptCur >= 0 ? attemptCur : 0;
-  const attemptMaxRaw = job.options && job.options.attempts;
-  const attemptMax =
-    typeof attemptMaxRaw === "number" && attemptMaxRaw > 0 ? Math.min(attemptMaxRaw, 24) : null;
-
-  let attemptsViz = "";
-  if (attemptMax != null) {
-    const slots = [];
-    for (let i = 1; i <= attemptMax; i++) {
-      slots.push(
-        `<span class="job-detail-te-slot ${i <= attemptCurSafe ? "job-detail-te-slot--used" : ""}" title="Attempt ${i}" aria-hidden="true"></span>`,
-      );
-    }
-    attemptsViz = `<div class="job-detail-te-attempts-viz">
-      <span class="job-detail-te-foot-eyebrow">Retry budget</span>
-      <div class="job-detail-te-slots">${slots.join("")}</div>
-      <span class="job-detail-te-slots-hint">${escapeHtml(String(attemptCurSafe))} of ${escapeHtml(String(attemptMax))} attempts recorded</span>
-    </div>`;
-  }
-
-  return `<div class="job-detail-te-foot">
-    <div class="job-detail-te-foot-strip">
-      <span class="job-detail-te-foot-eyebrow">Lifecycle</span>
-      <div class="job-detail-te-milestone-row" role="presentation">${milestoneRow}</div>
-    </div>
-    <div class="job-detail-te-durations">
-      <div class="job-detail-te-dur"><span class="job-detail-te-dur-k">Wall time</span>${durVal(wallMs)}</div>
-      <div class="job-detail-te-dur"><span class="job-detail-te-dur-k">Queue wait</span>${durVal(waitMs)}</div>
-      <div class="job-detail-te-dur"><span class="job-detail-te-dur-k">Run time</span>${durVal(runMs)}</div>
-    </div>
-    ${attemptsViz}
-  </div>`;
-}
-
 function copyJobDetailLink() {
   const q = detailJob?.queue_name ?? parseJobRoute(window.location.hash)?.queueName;
   const id = detailJob?.id ?? currentJobId ?? parseJobRoute(window.location.hash)?.jobId;
@@ -1117,6 +1580,11 @@ function closeJobDetailPage(opts = {}) {
   jobDetailActive = false;
   currentJobId = null;
   detailJob = null;
+
+  stopJobDetailRelativeTimer();
+  hideJobDetailToolbarMeta();
+  jobDetailLastFetchedAt = null;
+  jobDetailCloseOverflowMenu();
 
   document.getElementById("job-detail-view").style.display = "none";
 

@@ -35,6 +35,18 @@ struct JobListResponse {
 }
 
 #[derive(Serialize)]
+struct JobLogLineDto {
+    ts: String,
+    level: String,
+    message: String,
+}
+
+#[derive(Serialize)]
+struct JobLogsResponse {
+    lines: Vec<JobLogLineDto>,
+}
+
+#[derive(Serialize)]
 struct QueueListResponse {
     queues: Vec<String>,
 }
@@ -143,6 +155,17 @@ async fn get_job(state: web::Data<AppState>, path: web::Path<String>) -> ActixRe
             "error": "Invalid job ID format"
         }))),
     }
+}
+
+// API: Job logs (stub — empty until workers persist log lines to storage)
+async fn get_job_logs(path: web::Path<String>) -> ActixResult<HttpResponse> {
+    let job_id_str = path.into_inner();
+    if job_id_str.parse::<uuid::Uuid>().is_err() {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Invalid job ID format"
+        })));
+    }
+    Ok(HttpResponse::Ok().json(JobLogsResponse { lines: vec![] }))
 }
 
 // API: Retry a failed job
@@ -429,6 +452,10 @@ pub async fn start_web_ui(
             .route(
                 &format!("{}/queues/{{queue_name}}/jobs/{{state}}", api_path),
                 web::get().to(list_jobs),
+            )
+            .route(
+                &format!("{}/jobs/{{job_id}}/logs", api_path),
+                web::get().to(get_job_logs),
             )
             .route(
                 &format!("{}/jobs/{{job_id}}", api_path),
