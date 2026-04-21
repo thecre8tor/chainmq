@@ -10,28 +10,50 @@
       href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="styles.css?v=chainmq-ui-23" />
+    <link rel="stylesheet" href="styles.css?v=chainmq-ui-24" />
   </head>
   <body>
-    <div class="app-container">
+    <div class="app-container" id="appContainer">
       <!-- Sidebar -->
-      <aside class="sidebar">
+      <aside class="sidebar" aria-label="Queues navigation">
         <div class="sidebar-header">
-          <div class="logo">
+          <button
+            type="button"
+            id="sidebarCollapseBtn"
+            class="icon-btn sidebar-collapse-btn"
+            aria-expanded="true"
+            aria-controls="sidebarQueuesNav"
+            title="Collapse sidebar"
+          >
             <svg
-              width="24"
-              height="24"
+              class="sidebar-collapse-icon"
+              width="20"
+              height="20"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
               stroke-width="2"
+              aria-hidden="true"
             >
-              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+              <path d="M15 18l-6-6 6-6" />
             </svg>
-            <h1>ChainMQ</h1>
-          </div>
-          <div class="header-actions">
-            <button id="themeToggle" class="icon-btn" title="Toggle theme">
+          </button>
+          <div class="sidebar-header-body">
+            <div class="logo">
+              <svg
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+              </svg>
+              <h1>ChainMQ</h1>
+            </div>
+            <div class="header-actions">
+              <button id="themeToggle" class="icon-btn" title="Toggle theme">
               <svg
                 id="themeIcon"
                 width="20"
@@ -46,8 +68,8 @@
                   d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"
                 />
               </svg>
-            </button>
-            <button id="refreshBtn" class="icon-btn" title="Refresh">
+              </button>
+              <button id="refreshBtn" class="icon-btn" title="Refresh">
               <svg
                 width="20"
                 height="20"
@@ -60,10 +82,11 @@
                   d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.48L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"
                 />
               </svg>
-            </button>
+              </button>
+            </div>
           </div>
         </div>
-        <div class="sidebar-content">
+        <div class="sidebar-content" id="sidebarQueuesNav">
           <div class="queues-section">
             <h2>Queues</h2>
             <div id="queues-list" class="queues-list">

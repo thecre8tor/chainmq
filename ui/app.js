@@ -48,6 +48,7 @@ let jobDetailActive = false;
 let detailJob = null;
 
 const JOB_DETAIL_AUTO_KEY = "chainmq-job-detail-auto-refresh";
+const SIDEBAR_COLLAPSED_KEY = "chainmq-sidebar-collapsed";
 let jobDetailLastFetchedAt = null;
 let jobDetailRelativeTimer = 0;
 /** @type {"details" | "logs"} */
@@ -503,9 +504,44 @@ function updateThemeIcon(theme) {
   }
 }
 
+function syncSidebarCollapseButton() {
+  const btn = document.getElementById("sidebarCollapseBtn");
+  const app = document.getElementById("appContainer");
+  if (!btn || !app) return;
+  const collapsed = app.classList.contains("sidebar-collapsed");
+  btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  const label = collapsed ? "Expand sidebar" : "Collapse sidebar";
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+}
+
+function initSidebarCollapsed() {
+  const app = document.getElementById("appContainer");
+  if (!app) return;
+  if (localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1") {
+    app.classList.add("sidebar-collapsed");
+  }
+  syncSidebarCollapseButton();
+}
+
+function setSidebarCollapsed(collapsed) {
+  const app = document.getElementById("appContainer");
+  if (!app) return;
+  app.classList.toggle("sidebar-collapsed", collapsed);
+  localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+  syncSidebarCollapseButton();
+}
+
+function toggleSidebarCollapsed() {
+  const app = document.getElementById("appContainer");
+  if (!app) return;
+  setSidebarCollapsed(!app.classList.contains("sidebar-collapsed"));
+}
+
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {
   initTheme();
+  initSidebarCollapsed();
   loadQueues();
   setupEventListeners();
 
@@ -556,6 +592,11 @@ document.addEventListener("DOMContentLoaded", () => {
 function setupEventListeners() {
   // Theme toggle
   document.getElementById("themeToggle").addEventListener("click", toggleTheme);
+
+  const sidebarCollapseBtn = document.getElementById("sidebarCollapseBtn");
+  if (sidebarCollapseBtn) {
+    sidebarCollapseBtn.addEventListener("click", toggleSidebarCollapsed);
+  }
 
   // Refresh button
   document.getElementById("refreshBtn").addEventListener("click", () => {
@@ -865,8 +906,8 @@ function renderQueues() {
     .map((queue) => {
       const isActive = queue === currentQueue;
       return `
-      <div class="queue-item ${isActive ? "active" : ""}" data-queue="${queue}">
-        <span class="queue-item-name">${queue}</span>
+      <div class="queue-item ${isActive ? "active" : ""}" data-queue="${escapeAttr(queue)}" title="${escapeAttr(queue)}">
+        <span class="queue-item-name">${escapeHtml(queue)}</span>
         <span class="queue-item-stats" id="queue-stats-${queue}">-</span>
       </div>
     `;

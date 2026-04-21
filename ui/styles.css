@@ -10,7 +10,17 @@
   --text-secondary: #64748b;
   --text-tertiary: #94a3b8;
   --sidebar-bg: #ffffff;
+  --sidebar-bg-deep: #f1f5f9;
+  --sidebar-bg-gradient: radial-gradient(
+      120% 90% at 0% -10%,
+      color-mix(in srgb, var(--primary-color) 14%, transparent),
+      transparent 52%
+    ),
+    linear-gradient(168deg, #ffffff 0%, #f8fafc 42%, var(--sidebar-bg-deep) 100%);
   --sidebar-border: #e2e8f0;
+  --sidebar-edge-glow: color-mix(in srgb, var(--primary-color) 8%, transparent);
+  --sidebar-width: 288px;
+  --sidebar-width-collapsed: 76px;
   --card-bg: #ffffff;
   --card-shadow: 0 1px 2px rgba(15, 23, 42, 0.04),
     0 4px 12px rgba(15, 23, 42, 0.06);
@@ -60,8 +70,24 @@
   --text-primary: #f1f5f9;
   --text-secondary: #94a3b8;
   --text-tertiary: #64748b;
-  --sidebar-bg: #111827;
-  --sidebar-border: #1f2937;
+  --sidebar-bg: #0a0f1a;
+  --sidebar-bg-deep: #050810;
+  --sidebar-bg-gradient: radial-gradient(
+      130% 95% at 0% -5%,
+      color-mix(in srgb, var(--primary-color) 26%, transparent),
+      transparent 55%
+    ),
+    linear-gradient(
+      168deg,
+      #141c32 0%,
+      #0f172a 38%,
+      var(--sidebar-bg) 72%,
+      var(--sidebar-bg-deep) 100%
+    );
+  --sidebar-border: color-mix(in srgb, var(--primary-color) 12%, #1a2332);
+  --sidebar-edge-glow: color-mix(in srgb, var(--primary-color) 14%, transparent);
+  --sidebar-width: 288px;
+  --sidebar-width-collapsed: 76px;
   --card-bg: #151f33;
   --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.35),
     0 8px 24px rgba(0, 0, 0, 0.28);
@@ -121,22 +147,53 @@ body {
 
 /* Sidebar */
 .sidebar {
-  width: 288px;
-  background: var(--sidebar-bg);
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
+  flex-shrink: 0;
+  background-color: var(--sidebar-bg);
+  background-image: var(--sidebar-bg-gradient);
   border-right: 1px solid var(--sidebar-border);
+  box-shadow: inset -1px 0 0 var(--sidebar-edge-glow);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  transition: background-color 0.25s ease, border-color 0.25s ease;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    min-width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    background-color 0.25s ease,
+    border-color 0.25s ease,
+    box-shadow 0.25s ease;
 }
 
 .sidebar-header {
-  padding: 22px 22px 20px;
-  border-bottom: 1px solid var(--border-color);
+  padding: 20px 18px 18px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 85%, transparent);
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  transition: border-color 0.25s ease;
+  gap: 10px;
+  transition: border-color 0.25s ease, padding 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar-header-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sidebar-collapse-btn {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
+.sidebar-collapse-btn:hover {
+  color: var(--text-primary);
+}
+
+.sidebar-collapse-icon {
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transform-origin: 50% 50%;
 }
 
 .logo {
@@ -214,12 +271,15 @@ body {
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: background-color 0.15s ease, border-color 0.15s ease,
-    transform 0.18s ease;
-  border: 1px solid var(--border-color);
+    transform 0.18s ease, box-shadow 0.18s ease;
+  border: 1px solid color-mix(in srgb, var(--border-color) 92%, transparent);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: var(--bg-primary);
+  background: color-mix(in srgb, var(--bg-primary) 78%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent);
 }
 
 .queue-item:hover {
@@ -287,6 +347,92 @@ body {
   text-align: center;
   color: var(--text-secondary);
   font-size: 14px;
+}
+
+@media (min-width: 769px) {
+  .app-container.sidebar-collapsed .sidebar {
+    width: var(--sidebar-width-collapsed);
+    min-width: var(--sidebar-width-collapsed);
+  }
+
+  .app-container.sidebar-collapsed .sidebar-collapse-icon {
+    transform: rotate(180deg);
+  }
+
+  .app-container.sidebar-collapsed .sidebar-header {
+    flex-direction: column;
+    align-items: center;
+    padding: 16px 10px 14px;
+    gap: 14px;
+  }
+
+  .app-container.sidebar-collapsed .sidebar-header-body {
+    flex-direction: column;
+    width: 100%;
+    gap: 14px;
+  }
+
+  .app-container.sidebar-collapsed .logo {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .app-container.sidebar-collapsed .logo h1 {
+    display: none;
+  }
+
+  .app-container.sidebar-collapsed .header-actions {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .app-container.sidebar-collapsed .sidebar-content {
+    padding: 12px 10px 22px;
+  }
+
+  .app-container.sidebar-collapsed .queues-section h2 {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .app-container.sidebar-collapsed .queues-list {
+    gap: 8px;
+  }
+
+  .app-container.sidebar-collapsed .queue-item {
+    flex-direction: column;
+    justify-content: center;
+    padding: 10px 8px;
+    gap: 6px;
+    text-align: center;
+  }
+
+  .app-container.sidebar-collapsed .queue-item-name {
+    display: none;
+  }
+
+  .app-container.sidebar-collapsed .queue-item-stats {
+    min-width: 0;
+    padding: 4px 8px;
+    font-size: 11px;
+  }
+
+  .app-container.sidebar-collapsed .queue-item.active::before {
+    top: 6px;
+    bottom: 6px;
+  }
+
+  .app-container.sidebar-collapsed .loading-queues {
+    padding: 14px 8px;
+    font-size: 12px;
+  }
 }
 
 /* Main Content */
@@ -1954,6 +2100,12 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .sidebar-header,
+  .sidebar-collapse-icon {
+    transition: none;
+  }
+
   .queue-item:hover {
     transform: none;
   }
@@ -1972,8 +2124,13 @@ body {
     flex-direction: column;
   }
 
+  .sidebar-collapse-btn {
+    display: none;
+  }
+
   .sidebar {
     width: 100%;
+    min-width: 0;
     height: auto;
     max-height: 220px;
   }
