@@ -10,6 +10,55 @@ const API_BASE = (() => {
   return "/api";
 })();
 
+function escapeAttr(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** @param {number} executeAtMs */
+function formatDelayCountdown(executeAtMs) {
+  const ms = executeAtMs - Date.now();
+  if (ms <= 0) {
+    return { text: "Due now — waiting to process", variant: "overdue" };
+  }
+  const totalSec = Math.max(1, Math.ceil(ms / 1000));
+  if (totalSec < 60) {
+    return { text: `Runs in ${totalSec}s`, variant: "soon" };
+  }
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  if (totalSec < 3600) {
+    return { text: `Runs in ${m}m ${s}s`, variant: "normal" };
+  }
+  const h = Math.floor(totalSec / 3600);
+  const rem = totalSec % 3600;
+  const m2 = Math.floor(rem / 60);
+  const s2 = rem % 60;
+  return { text: `Runs in ${h}h ${m2}m ${s2}s`, variant: "normal" };
+}
+
+function updateDelayedCountdowns() {
+  document.querySelectorAll("[data-execute-at-ms]").forEach((el) => {
+    const raw = el.getAttribute("data-execute-at-ms");
+    const t = raw ? parseInt(raw, 10) : NaN;
+    if (Number.isNaN(t)) return;
+    const { text, variant } = formatDelayCountdown(t);
+    el.textContent = text;
+    if (variant === "overdue") {
+      el.style.color = "var(--warning-color)";
+      el.style.fontWeight = "600";
+    } else if (variant === "soon") {
+      el.style.color = "var(--warning-color)";
+      el.style.fontWeight = "600";
+    } else {
+      el.style.color = "var(--primary-color)";
+      el.style.fontWeight = "600";
+    }
+  });
+}
+
 let queues = [];
 let currentQueue = "";
 let currentState = "waiting";
@@ -18,10 +67,70 @@ let currentPage = 1;
 let pageSize = 25;
 let searchQuery = "";
 let allJobs = [];
+/** @type {Set<string>} */
+const selectedJobIds = new Set();
+
+function clearJobSelection() {
+  selectedJobIds.clear();
+  const allCb = document.getElementById("selectAllJobsCheckbox");
+  if (allCb) {
+    allCb.checked = false;
+    allCb.indeterminate = false;
+  }
+  updateBulkActionsBar();
+}
+
+function pruneStaleJobSelections() {
+  const valid = new Set(allJobs.map((j) => j.id));
+  for (const id of selectedJobIds) {
+    if (!valid.has(id)) {
+      selectedJobIds.delete(id);
+    }
+  }
+}
+
+function getSelectedJobRecords() {
+  return allJobs.filter((j) => selectedJobIds.has(j.id));
+}
+
+function syncSelectAllCheckbox() {
+  const cb = document.getElementById("selectAllJobsCheckbox");
+  if (!cb) return;
+  const filtered = getFilteredJobs();
+  if (filtered.length === 0) {
+    cb.checked = false;
+    cb.indeterminate = false;
+    cb.disabled = true;
+    return;
+  }
+  cb.disabled = false;
+  const nSel = filtered.filter((j) => selectedJobIds.has(j.id)).length;
+  cb.checked = nSel === filtered.length;
+  cb.indeterminate = nSel > 0 && nSel < filtered.length;
+}
+
+function updateBulkActionsBar() {
+  const bar = document.getElementById("jobsBulkBar");
+  const countEl = document.getElementById("bulkSelectionCount");
+  const retryBtn = document.getElementById("bulkRetryBtn");
+  if (!bar || !countEl || !retryBtn) return;
+
+  const records = getSelectedJobRecords();
+  const n = records.length;
+  if (n === 0) {
+    bar.style.display = "none";
+    return;
+  }
+  bar.style.display = "flex";
+  countEl.textContent =
+    n === 1 ? "1 job selected" : `${n} jobs selected`;
+  const failedCount = records.filter((j) => j.state === "Failed").length;
+  retryBtn.style.display = failedCount > 0 ? "inline-flex" : "none";
+}
 
 // Theme management
 function initTheme() {
-  const savedTheme = localStorage.getItem("theme") || "light";
+  const savedTheme = localStorage.getItem("theme") || "dark";
   document.documentElement.setAttribute("data-theme", savedTheme);
   updateThemeIcon(savedTheme);
 }
@@ -65,6 +174,9 @@ document.addEventListener("DOMContentLoaded", () => {
       loadQueues();
     }
   }, 3000);
+
+  // Live countdown for delayed jobs (independent of job list refresh)
+  setInterval(updateDelayedCountdowns, 1000);
 });
 
 function setupEventListeners() {
@@ -143,7 +255,77 @@ function setupEventListeners() {
     .getElementById("recoverStalledBtn")
     .addEventListener("click", recoverStalled);
   document.getElementById("retryJobBtn").addEventListener("click", retryJob);
-  document.getElementById("deleteJobBtn").addEventListener("click", deleteJob);
+  document.getElementById("deleteJobBtn").addEventListener("click", () =>
+    deleteJob(),
+  );
+
+  const selectAllCb = document.getElementById("selectAllJobsCheckbox");
+  if (selectAllCb) {
+    selectAllCb.addEventListener("change", (e) => {
+      const checked = e.currentTarget.checked;
+      const filtered = getFilteredJobs();
+      if (checked) {
+        filtered.forEach((j) => selectedJobIds.add(j.id));
+      } else {
+        filtered.forEach((j) => selectedJobIds.delete(j.id));
+      }
+      renderJobs();
+    });
+  }
+
+  document.getElementById("bulkClearBtn")?.addEventListener("click", () => {
+    clearJobSelection();
+    renderJobs();
+  });
+
+  document.getElementById("bulkDeleteBtn")?.addEventListener("click", () => {
+    void deleteSelectedJobs();
+  });
+
+  document.getElementById("bulkRetryBtn")?.addEventListener("click", () => {
+    void retrySelectedJobs();
+  });
+
+  // Job table: delete/retry/details (delegation — survives row re-renders)
+  const jobsTable = document.querySelector(".jobs-table");
+  if (!jobsTable) {
+    console.error("[chainmq] .jobs-table not found");
+  }
+  jobsTable?.addEventListener("change", (e) => {
+    const t = e.target;
+    if (t.classList?.contains("job-select-cb")) {
+      const id = t.dataset.jobId;
+      if (t.checked) {
+        selectedJobIds.add(id);
+      } else {
+        selectedJobIds.delete(id);
+      }
+      syncSelectAllCheckbox();
+      updateBulkActionsBar();
+    }
+  });
+
+  jobsTable?.addEventListener("click", (e) => {
+    const deleteBtn = e.target.closest('[data-action="delete-job"]');
+    if (deleteBtn) {
+      e.stopPropagation();
+      deleteJobById(deleteBtn.dataset.jobId, deleteBtn.dataset.queueName);
+      return;
+    }
+    const retryBtn = e.target.closest('[data-action="retry-job"]');
+    if (retryBtn) {
+      e.stopPropagation();
+      retryJobById(retryBtn.dataset.jobId);
+      return;
+    }
+    const row = e.target.closest(".job-row");
+    if (
+      row &&
+      !e.target.closest("button, input, label, .col-select, .job-actions")
+    ) {
+      showJobDetails(row.dataset.jobId);
+    }
+  });
 
   // Modal close on outside click
   document.getElementById("jobModal").addEventListener("click", (e) => {
@@ -154,6 +336,7 @@ function setupEventListeners() {
 }
 
 function switchState(state) {
+  clearJobSelection();
   currentState = state;
   currentPage = 1;
 
@@ -295,7 +478,7 @@ async function loadJobs() {
 
   try {
     const response = await fetch(
-      `${API_BASE}/queues/${currentQueue}/jobs/${currentState}?limit=1000`
+      `${API_BASE}/queues/${currentQueue}/jobs/${currentState}?limit=1000`,
     );
 
     if (!response.ok) {
@@ -310,16 +493,16 @@ async function loadJobs() {
     console.log(
       `Loaded ${
         data.jobs?.length || 0
-      } ${currentState} jobs for queue ${currentQueue}`
+      } ${currentState} jobs for queue ${currentQueue}`,
     );
     console.log("Jobs data:", data.jobs?.slice(0, 2)); // Debug: show first 2 jobs
     allJobs = data.jobs || [];
+    pruneStaleJobSelections();
     renderJobs();
   } catch (error) {
     console.error("Failed to load jobs:", error);
-    document.getElementById(
-      "jobs-table-body"
-    ).innerHTML = `<tr><td colspan="6" class="loading-jobs">Failed to load jobs: ${error.message}</td></tr>`;
+    document.getElementById("jobs-table-body").innerHTML =
+      `<tr><td colspan="7" class="loading-jobs">Failed to load jobs: ${error.message}</td></tr>`;
   }
 }
 
@@ -343,27 +526,19 @@ function renderJobs() {
   if (pageJobs.length === 0) {
     tbody.innerHTML = `
       <tr>
-        <td colspan="6" class="empty-jobs">
+        <td colspan="7" class="empty-jobs">
           <div class="empty-jobs-icon">📭</div>
           <div>No ${currentState} jobs found</div>
         </td>
       </tr>
     `;
     document.getElementById("pagination").style.display = "none";
+    syncSelectAllCheckbox();
+    updateBulkActionsBar();
     return;
   }
 
   tbody.innerHTML = pageJobs.map((job) => createJobRow(job)).join("");
-
-  // Add click listeners for view details
-  tbody.querySelectorAll(".job-row").forEach((row) => {
-    row.addEventListener("click", (e) => {
-      if (!e.target.closest(".btn")) {
-        const jobId = row.dataset.jobId;
-        showJobDetails(jobId);
-      }
-    });
-  });
 
   // Update pagination
   document.getElementById("pageInfo").textContent = `Page ${currentPage} of ${
@@ -373,6 +548,10 @@ function renderJobs() {
   document.getElementById("nextPage").disabled = currentPage >= totalPages;
   document.getElementById("pagination").style.display =
     totalPages > 1 ? "flex" : "none";
+
+  syncSelectAllCheckbox();
+  updateBulkActionsBar();
+  updateDelayedCountdowns();
 }
 
 function createJobRow(job) {
@@ -381,11 +560,17 @@ function createJobRow(job) {
 
   // For delayed jobs, show when they'll execute
   let timeInfo = created;
-  if (job.state === "Delayed" && job.options.delay_secs) {
-    const executeAt = new Date(
-      new Date(job.created_at).getTime() + job.options.delay_secs * 1000
-    );
-    timeInfo = `<div>${created}</div><div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">Executes: ${executeAt.toLocaleString()}</div>`;
+  if (job.state === "Delayed" && job.options.delay_secs != null) {
+    const executeAtMs =
+      new Date(job.created_at).getTime() + Number(job.options.delay_secs) * 1000;
+    const executeAt = new Date(executeAtMs);
+    const { text: initialCd, variant: initialVariant } =
+      formatDelayCountdown(executeAtMs);
+    const cdColor =
+      initialVariant === "overdue" || initialVariant === "soon"
+        ? "var(--warning-color)"
+        : "var(--primary-color)";
+    timeInfo = `<div>${created}</div><div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">Executes: ${executeAt.toLocaleString()}</div><div class="job-delay-countdown" data-execute-at-ms="${executeAtMs}" style="font-size: 13px; font-weight: 600; margin-top: 6px; color: ${cdColor};" aria-live="polite">${initialCd}</div>`;
   } else if (job.state === "Active" && job.started_at) {
     // For active jobs, show how long they've been running
     const started = new Date(job.started_at);
@@ -405,8 +590,18 @@ function createJobRow(job) {
     timeInfo = `<div>${started.toLocaleString()}</div><div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">Running: ${elapsedStr} / ${timeoutMins}m timeout</div>`;
   }
 
+  const isSelected = selectedJobIds.has(job.id);
   return `
     <tr class="job-row" data-job-id="${job.id}">
+      <td class="col-select">
+        <input
+          type="checkbox"
+          class="job-select-cb"
+          data-job-id="${escapeAttr(job.id)}"
+          ${isSelected ? "checked" : ""}
+          aria-label="Select job ${escapeAttr(job.id.substring(0, 8))}"
+        />
+      </td>
       <td><span class="job-id">${job.id.substring(0, 8)}...</span></td>
       <td><span class="job-name">${job.name}</span></td>
       <td><span class="job-state-badge ${stateClass}">${job.state}</span></td>
@@ -416,12 +611,10 @@ function createJobRow(job) {
         <div class="job-actions">
           ${
             job.state === "Failed"
-              ? '<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); retryJobById(\'' +
-                job.id +
-                "')\">Retry</button>"
+              ? `<button type="button" class="btn btn-success btn-sm" data-action="retry-job" data-job-id="${escapeAttr(job.id)}">Retry</button>`
               : ""
           }
-          <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); deleteJobById(\'' + job.id + '\')">Delete</button>
+          <button type="button" class="btn btn-danger btn-sm" data-action="delete-job" data-job-id="${escapeAttr(job.id)}" data-queue-name="${escapeAttr(job.queue_name)}">Delete</button>
         </div>
       </td>
     </tr>
@@ -463,12 +656,91 @@ function retryJobById(jobId) {
   retryJob();
 }
 
-function deleteJobById(jobId) {
+function deleteJobById(jobId, queueName) {
   if (!confirm("Are you sure you want to delete this job?")) {
     return;
   }
   currentJobId = jobId;
-  deleteJob();
+  deleteJob(queueName);
+}
+
+async function deleteJobApi(jobId, queueName) {
+  const params = new URLSearchParams({ queue_name: queueName });
+  const response = await fetch(
+    `${API_BASE}/jobs/${encodeURIComponent(jobId)}/delete?${params}`,
+    { method: "DELETE" },
+  );
+  const data = await response.json().catch(() => ({}));
+  return { response, data };
+}
+
+async function deleteSelectedJobs() {
+  const records = getSelectedJobRecords();
+  if (records.length === 0) return;
+
+  if (
+    !confirm(
+      `Delete ${records.length} job${records.length === 1 ? "" : "s"}? This cannot be undone.`,
+    )
+  ) {
+    return;
+  }
+
+  let failures = 0;
+  for (const job of records) {
+    const { response } = await deleteJobApi(job.id, job.queue_name);
+    if (response.ok) {
+      selectedJobIds.delete(job.id);
+    } else {
+      failures++;
+    }
+  }
+
+  if (failures > 0) {
+    alert(
+      `${failures} job${failures === 1 ? "" : "s"} could not be deleted. The rest were removed.`,
+    );
+  }
+
+  closeJobModal();
+  loadQueueStats();
+  await loadJobs();
+}
+
+async function retrySelectedJobs() {
+  const records = getSelectedJobRecords().filter((j) => j.state === "Failed");
+  if (records.length === 0) return;
+
+  if (
+    !confirm(
+      `Retry ${records.length} failed job${records.length === 1 ? "" : "s"}?`,
+    )
+  ) {
+    return;
+  }
+
+  let failures = 0;
+  for (const job of records) {
+    const response = await fetch(`${API_BASE}/jobs/${job.id}/retry`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ queue_name: job.queue_name }),
+    });
+    if (!response.ok) {
+      failures++;
+    }
+  }
+
+  if (failures > 0) {
+    alert(
+      `${failures} job${failures === 1 ? "" : "s"} could not be retried.`,
+    );
+  }
+
+  closeJobModal();
+  clearJobSelection();
+  loadQueueStats();
+  await loadJobs();
 }
 
 async function retryJob() {
@@ -497,24 +769,25 @@ async function retryJob() {
   }
 }
 
-async function deleteJob() {
-  if (!currentJobId || !currentQueue) return;
+async function deleteJob(queueNameOverride) {
+  const queueName = queueNameOverride ?? currentQueue;
+  if (!currentJobId || !queueName) {
+    alert(
+      !currentJobId
+        ? "No job selected."
+        : "No queue context for this job. Choose a queue in the sidebar or use the table Delete button.",
+    );
+    return;
+  }
 
   try {
-    const response = await fetch(`${API_BASE}/jobs/${currentJobId}/delete`, {
-      method: "DELETE",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ queue_name: currentQueue }),
-    });
-
-    const data = await response.json();
+    const { response, data } = await deleteJobApi(currentJobId, queueName);
 
     if (response.ok) {
+      selectedJobIds.delete(currentJobId);
       closeJobModal();
       loadQueueStats();
-      loadJobs();
+      await loadJobs();
     } else {
       alert("Failed to delete job: " + (data.error || "Unknown error"));
     }
@@ -528,7 +801,7 @@ async function processDelayed() {
 
   if (
     !confirm(
-      `Process delayed jobs from ${currentQueue}? This will move delayed jobs that are due to the waiting queue.`
+      `Process delayed jobs from ${currentQueue}? This will move delayed jobs that are due to the waiting queue.`,
     )
   ) {
     return;
@@ -542,20 +815,20 @@ async function processDelayed() {
         headers: {
           "Content-Type": "application/json",
         },
-      }
+      },
     );
 
     const data = await response.json();
 
     if (response.ok) {
       alert(
-        `Successfully moved ${data.moved_count || 0} delayed jobs to waiting`
+        `Successfully moved ${data.moved_count || 0} delayed jobs to waiting`,
       );
       loadQueueStats();
       loadJobs();
     } else {
       alert(
-        "Failed to process delayed jobs: " + (data.error || "Unknown error")
+        "Failed to process delayed jobs: " + (data.error || "Unknown error"),
       );
     }
   } catch (error) {
@@ -568,7 +841,7 @@ async function recoverStalled() {
 
   if (
     !confirm(
-      `Recover stalled jobs from ${currentQueue}? This will move jobs that have been active too long back to the waiting queue.`
+      `Recover stalled jobs from ${currentQueue}? This will move jobs that have been active too long back to the waiting queue.`,
     )
   ) {
     return;
@@ -582,7 +855,7 @@ async function recoverStalled() {
         headers: {
           "Content-Type": "application/json",
         },
-      }
+      },
     );
 
     const data = await response.json();
@@ -593,7 +866,7 @@ async function recoverStalled() {
       loadJobs();
     } else {
       alert(
-        "Failed to recover stalled jobs: " + (data.error || "Unknown error")
+        "Failed to recover stalled jobs: " + (data.error || "Unknown error"),
       );
     }
   } catch (error) {
@@ -605,7 +878,7 @@ async function cleanQueue() {
   if (!currentQueue) return;
 
   const state = prompt(
-    'Enter state to clean (waiting, delayed, failed, completed, or "all"):\n\nNote: Active jobs cannot be cleaned.'
+    'Enter state to clean (waiting, delayed, failed, completed, or "all"):\n\nNote: Active jobs cannot be cleaned.',
   );
   if (!state) return;
 
@@ -616,7 +889,7 @@ async function cleanQueue() {
 
   if (
     !confirm(
-      `Are you sure you want to clean ${state} jobs from ${currentQueue}? This action cannot be undone.`
+      `Are you sure you want to clean ${state} jobs from ${currentQueue}? This action cannot be undone.`,
     )
   ) {
     return;

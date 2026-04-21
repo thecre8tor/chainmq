@@ -1,10 +1,10 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ChainMQ Dashboard</title>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=chainmq-ui-5" />
   </head>
   <body>
     <div class="app-container">
@@ -305,10 +305,54 @@
               </div>
             </div>
 
+            <div
+              id="jobsBulkBar"
+              class="jobs-bulk-bar"
+              style="display: none"
+              role="region"
+              aria-label="Bulk actions for selected jobs"
+            >
+              <span id="bulkSelectionCount" class="bulk-selection-count"
+                >0 jobs selected</span
+              >
+              <div class="bulk-actions">
+                <button
+                  type="button"
+                  id="bulkClearBtn"
+                  class="btn btn-secondary btn-sm"
+                >
+                  Clear selection
+                </button>
+                <button
+                  type="button"
+                  id="bulkRetryBtn"
+                  class="btn btn-success btn-sm"
+                  style="display: none"
+                >
+                  Retry selected
+                </button>
+                <button
+                  type="button"
+                  id="bulkDeleteBtn"
+                  class="btn btn-danger btn-sm"
+                >
+                  Delete selected
+                </button>
+              </div>
+            </div>
+
             <div class="jobs-table-container">
               <table class="jobs-table">
                 <thead>
                   <tr>
+                    <th class="col-select" scope="col">
+                      <input
+                        type="checkbox"
+                        id="selectAllJobsCheckbox"
+                        title="Select all jobs in the current list (all pages; respects search filter)"
+                        aria-label="Select all jobs in list"
+                      />
+                    </th>
                     <th>ID</th>
                     <th>Name</th>
                     <th>State</th>
@@ -319,7 +363,7 @@
                 </thead>
                 <tbody id="jobs-table-body">
                   <tr>
-                    <td colspan="6" class="loading-jobs">Loading jobs...</td>
+                    <td colspan="7" class="loading-jobs">Loading jobs...</td>
                   </tr>
                 </tbody>
               </table>
@@ -403,6 +447,6 @@
       </div>
     </div>
 
-    <script src="app.js"></script>
+    <script src="app.js?v=chainmq-ui-5"></script>
   </body>
 </html>

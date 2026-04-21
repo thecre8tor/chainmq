@@ -5,7 +5,9 @@ use crate::{JobState, Queue};
 #[cfg(feature = "web-ui")]
 use actix_files;
 #[cfg(feature = "web-ui")]
-use actix_web::{App, HttpResponse, HttpServer, Result as ActixResult, web};
+use actix_web::{
+    App, HttpResponse, HttpServer, Result as ActixResult, middleware::DefaultHeaders, web,
+};
 #[cfg(feature = "web-ui")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "web-ui")]
@@ -171,11 +173,11 @@ async fn retry_job(
     }
 }
 
-// API: Delete a job
+// API: Delete a job (`queue_name` as query param avoids DELETE bodies, which some clients/proxies mishandle)
 async fn delete_job(
     state: web::Data<AppState>,
     path: web::Path<String>,
-    body: web::Json<DeleteJobRequest>,
+    query: web::Query<DeleteJobRequest>,
 ) -> ActixResult<HttpResponse> {
     let job_id_str = path.into_inner();
     let queue = state.queue.lock().await;
@@ -183,7 +185,7 @@ async fn delete_job(
     match job_id_str.parse::<uuid::Uuid>() {
         Ok(uuid) => {
             let job_id = crate::JobId(uuid);
-            match queue.delete_job(&job_id, &body.queue_name).await {
+            match queue.delete_job(&job_id, &query.queue_name).await {
                 Ok(()) => Ok(HttpResponse::Ok().json(serde_json::json!({
                     "success": true,
                     "message": "Job deleted successfully"
@@ -411,6 +413,12 @@ pub async fn start_web_ui(
     let server = HttpServer::new(move || {
         let api_path = api_path_for_closure.clone();
         App::new()
+            .wrap(
+                DefaultHeaders::new().add((
+                    "Cache-Control",
+                    "no-store, max-age=0, must-revalidate",
+                )),
+            )
             .app_data(web::Data::new(app_state.clone()))
             // Register API routes first (more specific)
             .route(&format!("{}/queues", api_path), web::get().to(get_queues))
@@ -469,7 +477,7 @@ pub async fn start_web_ui(
         port, ui_path
     );
     println!(
-        "[web-ui] Static files directory: {} (relative to process working directory)",
+        "[web-ui] Static files: {} (relative to process CWD — use repo root so UI edits are picked up)",
         UI_STATIC_DIR
     );
     println!("[web-ui] Press Ctrl+C to stop the server");

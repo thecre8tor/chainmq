@@ -488,6 +488,32 @@ body {
   border-color: var(--primary-color);
 }
 
+.jobs-bulk-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+}
+
+.bulk-selection-count {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
 /* Jobs Table */
 .jobs-table-container {
   overflow-x: auto;
@@ -513,6 +539,28 @@ body {
   color: var(--text-secondary);
   border-bottom: 1px solid var(--border-color);
   transition: border-color 0.3s ease;
+}
+
+.jobs-table th.col-select,
+.jobs-table td.col-select {
+  width: 44px;
+  padding-left: 16px;
+  padding-right: 12px;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.jobs-table th.col-select {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.jobs-table th.col-select input[type="checkbox"],
+.jobs-table td.col-select input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--primary-color);
 }
 
 .jobs-table td {

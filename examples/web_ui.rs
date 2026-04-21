@@ -1,4 +1,6 @@
-use actix_web::{App, HttpResponse, HttpServer, Result as ActixResult, web};
+use actix_web::{
+    App, HttpResponse, HttpServer, Result as ActixResult, middleware::DefaultHeaders, web,
+};
 use chainmq::{JobState, Queue, QueueOptions};
 use redis::Client as RedisClient;
 use serde::{Deserialize, Serialize};
@@ -169,11 +171,11 @@ async fn retry_job(
     }
 }
 
-// API: Delete a job
+// API: Delete a job (`queue_name` as query param avoids DELETE bodies, which some clients/proxies mishandle)
 async fn delete_job(
     state: web::Data<AppState>,
     path: web::Path<String>,
-    body: web::Json<DeleteJobRequest>,
+    query: web::Query<DeleteJobRequest>,
 ) -> ActixResult<HttpResponse> {
     let job_id_str = path.into_inner();
     let job_id = match job_id_str.parse::<uuid::Uuid>() {
@@ -186,7 +188,7 @@ async fn delete_job(
     };
 
     let queue = state.queue.lock().await;
-    match queue.delete_job(&job_id, &body.queue_name).await {
+    match queue.delete_job(&job_id, &query.queue_name).await {
         Ok(_) => Ok(HttpResponse::Ok().json(serde_json::json!({
             "success": true,
             "message": "Job deleted"
@@ -346,6 +348,12 @@ async fn main() -> std::io::Result<()> {
     // Start HTTP server
     HttpServer::new(move || {
         App::new()
+            .wrap(
+                DefaultHeaders::new().add((
+                    "Cache-Control",
+                    "no-store, max-age=0, must-revalidate",
+                )),
+            )
             .app_data(web::Data::new(app_state.clone()))
             .route("/api/queues", web::get().to(get_queues))
             .route(
