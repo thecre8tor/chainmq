@@ -250,6 +250,46 @@ body {
   padding: 22px 18px 28px;
 }
 
+.sidebar-footer {
+  flex-shrink: 0;
+  padding: 12px 14px 16px;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 85%, transparent);
+  transition: border-color 0.25s ease, padding 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar-logout-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-inset) 55%, transparent);
+  color: var(--text-secondary);
+  font-family: "DM Sans", system-ui, sans-serif;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.sidebar-logout-btn:hover {
+  background: var(--surface-inset);
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+}
+
+.sidebar-logout-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.sidebar-logout-btn svg {
+  flex-shrink: 0;
+}
+
 .queues-section h2 {
   font-size: 11px;
   text-transform: uppercase;
@@ -388,6 +428,27 @@ body {
 
   .app-container.sidebar-collapsed .sidebar-content {
     padding: 12px 10px 22px;
+  }
+
+  .app-container.sidebar-collapsed .sidebar-footer {
+    padding: 10px 8px 12px;
+  }
+
+  .app-container.sidebar-collapsed .sidebar-logout-btn {
+    padding: 10px 8px;
+    gap: 0;
+  }
+
+  .app-container.sidebar-collapsed .sidebar-logout-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   .app-container.sidebar-collapsed .queues-section h2 {
