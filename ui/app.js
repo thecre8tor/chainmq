@@ -60,21 +60,6 @@ function truncateMiddle(s, startLen, endLen) {
   return `${str.slice(0, startLen)}…${str.slice(-endLen)}`;
 }
 
-/** @param {Date} d */
-function formatRelativeTime(d) {
-  const now = Date.now();
-  const diffSec = Math.round((d.getTime() - now) / 1000);
-  const past = diffSec <= 0;
-  const sec = Math.abs(diffSec);
-  if (sec < 45) return past ? `${sec}s ago` : `in ${sec}s`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return past ? `${min}m ago` : `in ${min}m`;
-  const h = Math.floor(min / 60);
-  if (h < 48) return past ? `${h}h ago` : `in ${h}h`;
-  const days = Math.floor(h / 24);
-  return past ? `${days}d ago` : `in ${days}d`;
-}
-
 /** @param {number} ms */
 function formatDurationMs(ms) {
   if (!Number.isFinite(ms) || ms < 0) return "—";
@@ -86,15 +71,6 @@ function formatDurationMs(ms) {
   const h = Math.floor(min / 60);
   const rm = min % 60;
   return rm ? `${h}h ${rm}m` : `${h}h`;
-}
-
-/** @param {string | number | Date} iso */
-function timingValueHtml(iso) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return escapeHtml(String(iso));
-  const abs = d.toLocaleString();
-  const rel = formatRelativeTime(d);
-  return `<span class="job-detail-time-stack"><span class="job-detail-time-abs" title="${escapeAttr(rel)}">${escapeHtml(abs)}</span><span class="job-detail-time-rel">${escapeHtml(rel)}</span></span>`;
 }
 
 /** @param {number} executeAtMs */
@@ -865,18 +841,6 @@ function renderJobDetailPage(job) {
   const jid = String(job.id);
   const jidShort = truncateMiddle(jid, 10, 8);
 
-  /** @type {[string, string][]} */
-  const timing = [["Created", timingValueHtml(job.created_at)]];
-  if (job.started_at) {
-    timing.push(["Started", timingValueHtml(job.started_at)]);
-  }
-  if (job.completed_at) {
-    timing.push(["Completed", timingValueHtml(job.completed_at)]);
-  }
-  if (job.failed_at) {
-    timing.push(["Failed at", timingValueHtml(job.failed_at)]);
-  }
-
   const attemptMax =
     job.options && job.options.attempts != null ? job.options.attempts : "—";
 
@@ -908,50 +872,17 @@ function renderJobDetailPage(job) {
   const showCompletedNoResponse =
     !hasResponse && String(job.state).toLowerCase() === "completed";
 
-  const timingPhase = (label) => {
-    const k = String(label).toLowerCase();
-    if (k.includes("fail")) return "failed";
-    if (k.includes("complet")) return "completed";
-    if (k.includes("start")) return "started";
-    return "created";
-  };
-
-  const renderTimingExecutionPanel = (timingRows, executionRows, jobRef) => {
-    const n = timingRows.length;
-    const stepperHtml =
-      n === 0
-        ? ""
-        : `<div class="job-detail-te-stepper" role="list">${timingRows
-            .map(([label, html], i) => {
-              const phase = timingPhase(label);
-              const bridge =
-                i < n - 1 ? `<div class="job-detail-te-bridge" aria-hidden="true"></div>` : "";
-              return `<div class="job-detail-te-step-unit" role="listitem">
-          <div class="job-detail-te-step" data-phase="${phase}">
-            <span class="job-detail-te-step-dot" aria-hidden="true"></span>
-            <span class="job-detail-te-step-label">${escapeHtml(label)}</span>
-            <div class="job-detail-te-step-times">${html}</div>
-          </div>${bridge}
-        </div>`;
-            })
-            .join("")}</div>`;
-
+  const renderTimingExecutionPanel = (executionRows, jobRef) => {
     const statsHtml = renderExecutionStatsHtml(executionRows);
-    if (!stepperHtml && !statsHtml) return "";
-    const divider =
-      stepperHtml && statsHtml
-        ? `<div class="job-detail-te-divider" aria-hidden="true"></div>`
-        : "";
+    if (!statsHtml && !jobRef) return "";
     const footerHtml = jobRef ? renderTimingInsightFooter(jobRef) : "";
     return `
       <div class="job-detail-panel job-detail-panel--timing job-detail-panel--timing-execution">
-        <div class="job-detail-te-head">
-          <h3 class="job-detail-panel-title job-detail-te-title">Timing &amp; execution</h3>
+        <div class="job-detail-block-head">
+          <h3 class="job-detail-block-head__title">Timing &amp; execution</h3>
         </div>
         <div class="job-detail-te-body">
           <div class="job-detail-te-core">
-            ${stepperHtml}
-            ${divider}
             ${statsHtml}
           </div>
           ${footerHtml}
@@ -967,28 +898,34 @@ function renderJobDetailPage(job) {
     const codeInner = jsonStr === "" ? "" : highlightJsonToHtml(jsonStr);
     return `
     <div class="job-detail-section job-detail-section-code${extra}">
-      <div class="job-detail-code-toolbar">
-        <h3>${escapeHtml(title)}</h3>
-        <button type="button" class="job-detail-copy-json job-detail-icon-copy" data-copy-job-json="${field}" aria-label="Copy ${escapeAttr(title)} as JSON" title="Copy JSON">${copyIconSvg}</button>
+      <div class="job-detail-code-toolbar job-detail-block-head">
+        <h3 class="job-detail-block-head__title">${escapeHtml(title)}</h3>
+        <div class="job-detail-block-head__actions">
+          <button type="button" class="job-detail-copy-json job-detail-icon-copy" data-copy-job-json="${field}" aria-label="Copy ${escapeAttr(title)} as JSON" title="Copy JSON">${copyIconSvg}</button>
+        </div>
       </div>
       <div class="job-detail-json${tone}"><pre><code class="job-detail-code job-detail-code--highlighted">${codeInner}</code></pre></div>
     </div>`;
   };
 
-  const timingExecPanel = renderTimingExecutionPanel(timing, execution, job);
+  const timingExecPanel = renderTimingExecutionPanel(execution, job);
 
   const responseBlock = hasResponse
     ? `<div class="job-detail-body__cell job-detail-response-wrap">${codeSection("Response", "response", responseJson, "job-detail-section-code--detail-col", "job-detail-json--tone-response")}</div>`
     : showCompletedNoResponse
       ? `<div class="job-detail-body__cell">
           <div class="job-detail-panel job-detail-panel--placeholder job-detail-panel--response-placeholder">
-            <h3 class="job-detail-panel-title">Response</h3>
+            <div class="job-detail-block-head">
+              <h3 class="job-detail-block-head__title">Response</h3>
+            </div>
+            <div class="job-detail-response-placeholder-body">
             <div class="job-detail-response-empty-state" role="note">
               <div class="job-detail-response-empty-icon" aria-hidden="true">
                 <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h6"/><path d="M8 17h4"/></svg>
               </div>
               <p class="job-detail-response-empty-lead">No worker response yet</p>
               <p class="job-detail-response-empty">Completed jobs can include JSON from <code class="job-detail-inline-code">JobContext::set_response</code> before the job finishes successfully.</p>
+            </div>
             </div>
           </div>
         </div>`
