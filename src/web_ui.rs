@@ -358,10 +358,33 @@ async fn process_delayed(
 /// relative to the process working directory. Not configurable via the public API.
 const UI_STATIC_DIR: &str = "./ui";
 
+#[cfg(feature = "web-ui")]
+fn bind_addr_for_listen(host: &str, port: u16) -> String {
+    use std::net::IpAddr;
+    let host = host.trim();
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V6(addr)) => format!("[{}]:{}", addr, port),
+        _ => format!("{host}:{port}"),
+    }
+}
+
+#[cfg(feature = "web-ui")]
+fn http_origin(host: &str, port: u16) -> String {
+    use std::net::IpAddr;
+    let host = host.trim();
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V6(addr)) => format!("http://[{}]:{}", addr, port),
+        _ => format!("http://{host}:{port}"),
+    }
+}
+
 /// Configuration for the web UI server
 #[cfg(feature = "web-ui")]
 #[derive(Debug, Clone)]
 pub struct WebUIConfig {
+    /// Host or IP to bind (default: `127.0.0.1`). Use `0.0.0.0` to listen on all IPv4 interfaces
+    /// when clients reach the process directly (protect with a firewall or reverse proxy).
+    pub bind_host: String,
     /// Port to bind the server to
     pub port: u16,
     /// Base path for the UI (e.g., "/dashboard", "/admin/queues")
@@ -372,7 +395,8 @@ pub struct WebUIConfig {
 impl Default for WebUIConfig {
     fn default() -> Self {
         Self {
-            port: 8080,
+            bind_host: "127.0.0.1".to_string(),
+            port: 8085,
             ui_path: "/".to_string(),
         }
     }
@@ -449,6 +473,9 @@ pub async fn start_web_ui(
     let ui_path = config.ui_path.clone();
     let ui_dir = UI_STATIC_DIR.to_string();
     let port = config.port;
+    let bind_host = config.bind_host.clone();
+    let bind_addr = bind_addr_for_listen(&bind_host, port);
+    let origin = http_origin(&bind_host, port);
 
     let api_path = if ui_path == "/" {
         "/api".to_string()
@@ -461,6 +488,7 @@ pub async fn start_web_ui(
     let ui_dir_for_closure = ui_dir.clone();
     let api_path_for_closure = api_path.clone();
     let api_path_for_print = api_path.clone();
+    let origin_for_print = origin.clone();
 
     let server = HttpServer::new(move || {
         let api_path = api_path_for_closure.clone();
@@ -515,20 +543,20 @@ pub async fn start_web_ui(
                     .prefer_utf8(true),
             )
     })
-    .bind(("127.0.0.1", port))?
+    .bind(&bind_addr)?
     .run();
 
     println!(
-        "[web-ui] ChainMQ Web UI started on http://127.0.0.1:{}{}",
-        port, ui_path
+        "[web-ui] ChainMQ Web UI listening on {} (UI: {}{})",
+        bind_addr, origin_for_print, ui_path
     );
     println!(
-        "[web-ui] API available at http://127.0.0.1:{}{}",
-        port, api_path_for_print
+        "[web-ui] API available at {}{}",
+        origin_for_print, api_path_for_print
     );
     println!(
-        "[web-ui] Open http://127.0.0.1:{}{} in your browser to view the dashboard",
-        port, ui_path
+        "[web-ui] Open {}{} in your browser to view the dashboard",
+        origin_for_print, ui_path
     );
     println!(
         "[web-ui] Static files: {} (relative to process CWD — use repo root so UI edits are picked up)",

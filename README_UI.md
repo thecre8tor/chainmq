@@ -72,10 +72,14 @@ Optional: cap retention with **`QueueOptions::job_logs_max_lines`** (default `50
 
 ### WebUIConfig
 
-Only **port** and **HTTP base path** (`ui_path`) are configurable. Static assets are always loaded from **`./ui`** relative to the process current working directory (see [UI files](#ui-files)).
+**Bind address** (`bind_host`), **port**, and **HTTP base path** (`ui_path`) are configurable. Static assets are always loaded from **`./ui`** relative to the process current working directory (see [UI files](#ui-files)).
 
 ```rust
 pub struct WebUIConfig {
+    /// Host or IP to bind (default: "127.0.0.1"). Use "0.0.0.0" for all IPv4 interfaces
+    /// when the process must accept remote connections (use a firewall or proxy in production).
+    pub bind_host: String,
+
     /// Port to bind the server to (default: 8080)
     pub port: u16,
 
@@ -117,6 +121,17 @@ let config = WebUIConfig {
 };
 // UI: http://127.0.0.1:3000/admin/queues
 // API: http://127.0.0.1:3000/admin/queues/api
+```
+
+#### Listen on All Interfaces (e.g. Containers or Direct LAN Access)
+
+```rust
+let config = WebUIConfig {
+    bind_host: "0.0.0.0".to_string(),
+    port: 8080,
+    ..Default::default()
+};
+// Prefer a reverse proxy or firewall when bind_host is not loopback.
 ```
 
 ## UI files
