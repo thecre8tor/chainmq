@@ -406,7 +406,7 @@ function updateDelayedCountdowns() {
 
 let queues = [];
 let currentQueue = "";
-let currentState = "waiting";
+let currentState = "completed";
 let currentJobId = null;
 let currentPage = 1;
 let pageSize = 25;
@@ -956,7 +956,6 @@ function selectQueue(queueName) {
   clearHashRoute();
 
   currentQueue = queueName;
-  currentState = "waiting";
   currentPage = 1;
   searchQuery = "";
   document.getElementById("searchInput").value = "";
@@ -975,7 +974,7 @@ function selectQueue(queueName) {
     item.classList.toggle("active", item.dataset.queue === queueName);
   });
 
-  switchState("waiting");
+  switchState("completed");
 
   loadQueueStats();
   loadJobs();

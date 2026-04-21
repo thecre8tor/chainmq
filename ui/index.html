@@ -192,9 +192,33 @@
           >
             <div
               class="stat-card active"
-              data-state="waiting"
+              data-state="completed"
               role="tab"
               aria-selected="true"
+            >
+              <div class="stat-icon completed">
+                <svg
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                  <polyline points="22 4 12 14.01 9 11.01" />
+                </svg>
+              </div>
+              <div class="stat-info">
+                <div class="stat-label">Completed</div>
+                <div class="stat-value" id="stat-completed">0</div>
+              </div>
+            </div>
+            <div
+              class="stat-card"
+              data-state="waiting"
+              role="tab"
+              aria-selected="false"
             >
               <div class="stat-icon waiting">
                 <svg
@@ -286,37 +310,13 @@
                 <div class="stat-value" id="stat-failed">0</div>
               </div>
             </div>
-            <div
-              class="stat-card"
-              data-state="completed"
-              role="tab"
-              aria-selected="false"
-            >
-              <div class="stat-icon completed">
-                <svg
-                  width="24"
-                  height="24"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-                  <polyline points="22 4 12 14.01 9 11.01" />
-                </svg>
-              </div>
-              <div class="stat-info">
-                <div class="stat-label">Completed</div>
-                <div class="stat-value" id="stat-completed">0</div>
-              </div>
-            </div>
           </div>
 
           <!-- Jobs Section -->
           <div class="jobs-section">
             <div class="jobs-header">
               <p id="jobsContextLabel" class="jobs-context-label" aria-live="polite">
-                Showing waiting jobs
+                Showing Completed jobs
               </p>
               <div class="jobs-controls">
                 <div class="search-wrapper">
