@@ -14,27 +14,29 @@ This crate is library-first. Runnable examples demonstrate typical patterns (sin
 - ⏰ Delayed jobs: Schedule jobs for future execution with atomic operations
 - 🗄️ Backoff strategies: Configurable retry logic for failed jobs
 - 📊 Application Context: Share application state across jobs
-- 🖥️ Web UI: Beautiful dashboard for monitoring and managing queues
+- 🖥️ Web UI: Dashboard for monitoring and managing queues (one server sees every logical queue under the same Redis `key_prefix`; see [README_UI.md](./README_UI.md))
+- 📝 Job execution logs: optional Redis-backed log lines for the dashboard when using `tracing` and the job-log layer (documented in README_UI.md)
 
-## Quick Start:
+## Quick Start
 
 Add ChainMQ to your `Cargo.toml`:
 
 ```toml
 [dependencies]
 chainmq = "0.2.0"
-actix-web = "4.0"
-redis = "0.23"
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
+async-trait = "0.1"
 ```
+
+The crate enables the **`web-ui`** feature by default (optional Actix server and static dashboard). For a smaller dependency tree when you only need the library, use `chainmq = { version = "0.2.0", default-features = false }` and add `features = ["web-ui"]` when you want the built-in UI helpers (`start_web_ui`, etc.). See [README_UI.md](./README_UI.md) for setup, log capture, and `WebUIConfig`.
 
 ## Basic Usage:
 
 ### 1. Define Your Job
 
 ```rust
-use chainmq::{Job, AppContext};
+use chainmq::{AppContext, Job, JobContext};
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -93,7 +95,7 @@ impl AppContext for AppState {
 }
 ```
 
-### 3. Configure Workers and Your Preffered Web Server
+### 3. Configure Workers and Your Preferred Web Server
 
 ```rust
 use chainmq::{JobRegistry, WorkerBuilder};
@@ -173,51 +175,62 @@ async fn enqueue_email_job(app_state: &AppState) -> chainmq::Result<()> {
 
 ## Examples
 
-This repo provides runnable examples. Build them all:
+Runnable examples live under `examples/`. Build them all:
 
 ```bash
 cargo build --examples
 ```
 
-Run Redis first, then in separate terminals run workers/enqueuers:
+Run Redis first, then use separate terminals for workers and enqueuers:
 
 ```bash
-# Single worker for emails queue
+# Single worker for the emails queue (tracing → Redis job logs for the web UI)
 cargo run --example worker_main
 
-# Enqueue email jobs (normal + delayed/high priority)
+# Enqueue email jobs (normal + delayed / high priority); optional UI entrypoint at end of file
 cargo run --example enqueue_email
 
-# One worker handling multiple job types on a single queue
+# One worker handling multiple job types on one logical queue name
 cargo run --example multi_jobs_single_worker
 
-# Two workers on different queues (emails + reports)
+# Multiple job types each with their own queue_name(); enqueue then start UI (same Redis)
+cargo run --example multi_jobs_with_ui
+
+# Two workers polling different logical queues (emails + reports)
 cargo run --example multi_workers
 
-# Failure and retry with backoff demonstration
+# Failure and retry with backoff
 cargo run --example failure_retry
 
-# Delayed jobs demonstration
+# Delayed jobs
 cargo run --example delayed_jobs
 
-# Web UI dashboard for monitoring and managing queues
+# Built-in dashboard (`start_web_ui` / `start_web_ui_simple`) — see README_UI.md
+cargo run --example start_ui
+# Then open http://127.0.0.1:8080/dashboard (path matches WebUIConfig in the example)
+
+# Larger enqueue/processing demo (data volume / stress-style usage)
+cargo run --example large_data_processing
+
+# Reference: hand-rolled Actix routes mirroring the dashboard API (for custom servers)
 cargo run --example web_ui
-# Then open http://127.0.0.1:8080 in your browser
 ```
 
 **Notes:**
 
 - You can enqueue before or after workers start. Jobs persist in Redis until claimed.
-- Ensure both worker and enqueuer use the same Redis URL and queue name.
-- Some examples default to `redis://localhost:6379`. Adjust to your setup.
+- Workers must use `.with_queue_name()` that matches the jobs they should claim; use the **same Redis URL and `key_prefix`** as producers and the web UI so everyone sees the same data.
+- Some examples use non-default Redis URLs or ports (for example `6370`). Check the top of each example and adjust for your environment.
 
 ## Core Concepts
 
 - **Job**: Defines work to be done. Implements `trait Job { async fn perform(&self, &JobContext) -> Result<()>; fn name() -> &str; fn queue_name() -> &str }`
-- **Queue**: Persists job metadata and manages wait/delayed/active/failed job lists in Redis
-- **Worker**: Polls queues, claims jobs atomically via Lua scripts, executes jobs via JobRegistry
+- **Queue**: One client handle for a Redis instance and `key_prefix`. It persists job metadata and manages wait / delayed / active / failed lists. **Logical queues** are the string returned by `Job::queue_name()`; many names can coexist under one `Queue`. Listing and the web UI operate on every queue name in that namespace.
+- **Worker**: Polls a configured queue name, claims jobs atomically via Lua scripts, and executes them through `JobRegistry`
 - **Registry**: Maps job type names to executors for deserialization and dispatch
 - **JobContext**: Provides access to application state and job metadata during execution
+
+**Web UI:** Start it once (for example `start_web_ui` with one `Queue`). That process discovers **all** logical queue names for the same Redis + `key_prefix`. It does not merge different prefixes or Redis URLs; use one `Queue` configuration that matches your workers and enqueuers. Details: [README_UI.md](./README_UI.md).
 
 ## Configuration
 
@@ -267,6 +280,7 @@ let options = QueueOptions {
     key_prefix: "rbq".to_string(),
     default_concurrency: 10,
     max_stalled_interval: 30000, // 30 seconds
+    job_logs_max_lines: 500,
 };
 
 let queue = Queue::new(options).await?;
@@ -412,59 +426,6 @@ impl Job for RiskyJob {
 }
 ```
 
-## Service injection (AppContext)
-
-Inject your own services (DB pools, HTTP clients, caches, etc.) via `AppContext`. The worker holds an `Arc<dyn AppContext>` and each job receives it through `JobContext`.
-
-Define your application state:
-
-```rust
-use chainmq::AppContext;
-use std::sync::Arc;
-
-#[derive(Clone)]
-struct AppState {
-    db: sqlx::PgPool,
-    http: reqwest::Client,
-}
-
-impl AppContext for AppState {
-    fn clone_context(&self) -> Arc<dyn AppContext> { Arc::new(self.clone()) }
-}
-```
-
-Pass it to the worker:
-
-```rust
-let app = Arc::new(AppState { db: pool, http: reqwest::Client::new() });
-let mut worker = WorkerBuilder::new_with_redis_uri("redis://localhost:6379", registry)
-    .with_app_context(app)
-    .with_queue_name("default")
-    .spawn()
-    .await?;
-```
-
-Use it inside jobs via the helper `ctx.app::<T>()` (preferred) or explicit downcast:
-
-```rust
-#[async_trait]
-impl Job for MyJob {
-    async fn perform(&self, ctx: &JobContext) -> Result<()> {
-        // Preferred typed helper
-        if let Some(app) = ctx.app::<AppState>() {
-            let row = sqlx::query!("select 1 as one").fetch_one(&app.db).await?;
-            let _ = app.http.get("https://example.com").send().await?;
-            println!("db one = {}", row.one);
-        }
-
-        // Or manual downcast if needed
-        // if let Some(app) = ctx.app_context.as_ref().as_any().downcast_ref::<AppState>() { /* ... */ }
-        Ok(())
-    }
-    fn name() -> &'static str { "MyJob" }
-}
-```
-
 ## Internals (high level)
 
 ChainMQ uses Lua scripts to ensure atomic operations:
@@ -474,11 +435,14 @@ ChainMQ uses Lua scripts to ensure atomic operations:
 
 Redis keys use a configurable prefix (default `rbq`):
 
+- `rbq:queues` - Set of logical queue names (also discovered by scanning queue key patterns)
 - `rbq:queue:{name}:wait` - Jobs waiting to be processed
 - `rbq:queue:{name}:active` - Jobs currently being processed
 - `rbq:queue:{name}:delayed` - Jobs scheduled for future execution
 - `rbq:queue:{name}:failed` - Jobs that have failed processing
+- `rbq:queue:{name}:completed` - Completed job IDs (when used)
 - `rbq:job:{id}` - Individual job metadata and payload
+- `rbq:job:{id}:logs` - Per-job log lines for the UI (when enabled)
 
 ## Troubleshooting
 

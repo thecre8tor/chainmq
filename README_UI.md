@@ -1,6 +1,6 @@
 # ChainMQ Web UI
 
-The ChainMQ Web UI provides a modern, BullMQ-style dashboard for monitoring and managing your job queues.
+The ChainMQ Web UI provides a modern, BullMQ-style dashboard for monitoring and managing your job queues. Run **one** UI server with a `Queue` configured for your Redis instance and `key_prefix`; it lists and manages **every** logical queue name (`Job::queue_name()`) in that namespace.
 
 ## Features
 
@@ -17,12 +17,14 @@ The ChainMQ Web UI provides a modern, BullMQ-style dashboard for monitoring and 
 
 ### 1. Enable the web-ui feature
 
-Add the `web-ui` feature to your `Cargo.toml`:
+The `web-ui` feature is **enabled by default** on `chainmq` 0.2.0. You only need to set it explicitly when you disabled default features:
 
 ```toml
 [dependencies]
-chainmq = { version = "0.2.0", features = ["web-ui"] }
+chainmq = { version = "0.2.0", features = ["web-ui"], default-features = false }
 ```
+
+Otherwise a plain dependency on `chainmq = "0.2.0"` is enough for `start_web_ui` / `start_web_ui_simple`.
 
 ### 2. Start the UI server
 
