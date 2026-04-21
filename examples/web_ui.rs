@@ -53,6 +53,11 @@ struct DeleteJobRequest {
     queue_name: String,
 }
 
+#[derive(Deserialize)]
+struct JobLogsQuery {
+    limit: Option<usize>,
+}
+
 // API: Get all queues
 async fn get_queues(state: web::Data<AppState>) -> ActixResult<HttpResponse> {
     let queue = state.queue.lock().await;
@@ -155,14 +160,38 @@ async fn get_job(state: web::Data<AppState>, path: web::Path<String>) -> ActixRe
     }
 }
 
-async fn get_job_logs(path: web::Path<String>) -> ActixResult<HttpResponse> {
+async fn get_job_logs(
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+    query: web::Query<JobLogsQuery>,
+) -> ActixResult<HttpResponse> {
     let job_id_str = path.into_inner();
-    if job_id_str.parse::<uuid::Uuid>().is_err() {
-        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "Invalid job ID format"
-        })));
+    let job_id = match job_id_str.parse::<uuid::Uuid>() {
+        Ok(uuid) => chainmq::JobId(uuid),
+        Err(_) => {
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Invalid job ID format"
+            })));
+        }
+    };
+    let limit = query.limit.unwrap_or(200).clamp(1, 500);
+    let queue = state.queue.lock().await;
+    match queue.get_job_logs(&job_id, limit).await {
+        Ok(lines) => {
+            let lines: Vec<JobLogLineDto> = lines
+                .into_iter()
+                .map(|l| JobLogLineDto {
+                    ts: l.ts,
+                    level: l.level,
+                    message: l.message,
+                })
+                .collect();
+            Ok(HttpResponse::Ok().json(JobLogsResponse { lines }))
+        }
+        Err(e) => Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": e.to_string()
+        }))),
     }
-    Ok(HttpResponse::Ok().json(JobLogsResponse { lines: vec![] }))
 }
 
 // API: Retry a failed job
@@ -371,10 +400,8 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .wrap(
-                DefaultHeaders::new().add((
-                    "Cache-Control",
-                    "no-store, max-age=0, must-revalidate",
-                )),
+                DefaultHeaders::new()
+                    .add(("Cache-Control", "no-store, max-age=0, must-revalidate")),
             )
             .app_data(web::Data::new(app_state.clone()))
             .route("/api/queues", web::get().to(get_queues))

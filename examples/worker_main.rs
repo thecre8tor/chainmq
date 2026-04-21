@@ -4,6 +4,7 @@ use chainmq::{
 use redis::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tracing::info;
 
 #[derive(Serialize, Deserialize)]
 struct EmailJob {
@@ -15,9 +16,13 @@ struct EmailJob {
 #[async_trait]
 impl Job for EmailJob {
     async fn perform(&self, ctx: &JobContext) -> Result<()> {
-        println!(
-            "[worker] Executing EmailJob → to='{}' subject='{}'",
-            self.to, self.subject
+        // `tracing` events here are stored in Redis and shown in the web UI Job → Logs tab
+        // (the worker installs `job_logs_layer` if you have not set a global subscriber).
+        // `println!` is not captured.
+        info!(
+            to = %self.to,
+            subject = %self.subject,
+            "executing EmailJob"
         );
         if let Some(app) = ctx.app::<AppState>() {
             app.email_service
@@ -30,7 +35,7 @@ impl Job for EmailJob {
             "subject": self.subject,
             "message_id": format!("ex-{}", ctx.job_id),
         }));
-        println!("[worker] EmailJob completed for to='{}'", self.to);
+        info!(to = %self.to, "EmailJob completed");
         Ok(())
     }
 
@@ -57,28 +62,20 @@ impl AppContext for AppState {
 struct EmailService;
 
 impl EmailService {
-    async fn send(&self, _to: &str, _subject: &str, _body: &str) -> Result<()> {
-        println!("Sent email to {}: {}", _to, _subject);
+    async fn send(&self, to: &str, subject: &str, _body: &str) -> Result<()> {
+        info!(%to, %subject, "email send simulated");
         Ok(())
     }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging to see library tracing output
-    tracing_subscriber::fmt::try_init().ok();
     println!("[boot] Initializing AppState and dependencies...");
     let app_state = Arc::new(AppState::default());
-    println!("[boot] AppState initialized.");
 
     println!("[boot] Creating JobRegistry and registering EmailJob...");
     let mut registry = JobRegistry::new();
     registry.register::<EmailJob>();
-    println!(
-        "[boot] Registered job: {} on queue '{}'",
-        EmailJob::name(),
-        EmailJob::queue_name()
-    );
 
     let redis_url = "redis://localhost:6370";
     let concurrency = 5usize;
@@ -90,7 +87,6 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let client = Client::open(redis_url)?;
-
     let mut worker = WorkerBuilder::new_with_redis_instance(client, registry)
         .with_app_context(app_state)
         .with_concurrency(concurrency)

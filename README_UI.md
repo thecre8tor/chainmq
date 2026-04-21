@@ -11,6 +11,7 @@ The ChainMQ Web UI provides a modern, BullMQ-style dashboard for monitoring and 
 - ⚡ Queue actions (clean, recover stalled, process delayed)
 - 🔄 Auto-refresh every 3 seconds
 - 📱 Responsive design
+- 📝 Per-job execution logs (when workers use `job_logs_layer`; see [Job execution logs](#job-execution-logs))
 
 ## Quick Start
 
@@ -54,6 +55,16 @@ async fn main() -> anyhow::Result<()> {
 Open your browser and navigate to:
 - **UI**: `http://127.0.0.1:8080/dashboard`
 - **API**: `http://127.0.0.1:8080/dashboard/api`
+
+## Job execution logs
+
+The **Logs** tab on a job calls `GET …/api/jobs/{job_id}/logs` and reads lines stored in **Redis** (same instance and key prefix as the queue). They are **not** captured from `println!` or raw stdout: with concurrent jobs in one process, stdout is global and cannot be attributed per job. Use **`tracing`** (`info!`, `debug!`, etc.) inside your job’s `perform` while the worker has entered the `job_execution` span (the library does this around your handler).
+
+**Default:** when you start a `Worker` and the process has **no** global `tracing` subscriber yet, ChainMQ installs one: `EnvFilter` (from `RUST_LOG`, else `info`), stdout formatting, and **`job_logs_layer`** for that worker’s queue. No extra setup is required (see [`examples/worker_main.rs`](./examples/worker_main.rs)).
+
+**Custom subscriber:** if you call `tracing_subscriber::…::init()` (or equivalent) **before** `WorkerBuilder::spawn`, you must add **`chainmq::job_logs_layer`** yourself and pass the same **`Arc<Queue>`** via **`WorkerBuilder::with_shared_queue`**, so the layer and the worker share one queue handle.
+
+Optional: cap retention with **`QueueOptions::job_logs_max_lines`** (default `500`). Logs for a job are removed when the job row is deleted.
 
 ## Configuration Options
 
@@ -124,6 +135,7 @@ All API endpoints are prefixed with `{ui_path}/api`:
 - `GET /api/queues/{queue_name}/stats` - Get queue statistics
 - `GET /api/queues/{queue_name}/jobs/{state}` - List jobs by state
 - `GET /api/jobs/{job_id}` - Get job details
+- `GET /api/jobs/{job_id}/logs?limit=200` - Job execution log lines (from `job_logs_layer`; optional `limit`, max 500)
 - `POST /api/jobs/{job_id}/retry` - Retry a failed job
 - `DELETE /api/jobs/{job_id}/delete` - Delete a job
 - `POST /api/queues/clean` - Clean jobs by state

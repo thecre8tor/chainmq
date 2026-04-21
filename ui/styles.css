@@ -327,12 +327,12 @@ body {
 
 .queue-item-name {
   font-weight: 500;
-  font-size: 14px;
+  font-size: 16px;
   color: var(--text-primary);
 }
 
 .queue-item-stats {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
   background: var(--surface-inset);
   padding: 5px 11px;
@@ -421,7 +421,7 @@ body {
   .app-container.sidebar-collapsed .queue-item-stats {
     min-width: 0;
     padding: 4px 8px;
-    font-size: 11px;
+    font-size: 12px;
   }
 
   .app-container.sidebar-collapsed .queue-item.active::before {

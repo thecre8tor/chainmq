@@ -28,7 +28,10 @@ struct NotificationJob {
 #[async_trait]
 impl Job for EmailJob {
     async fn perform(&self, _ctx: &JobContext) -> Result<()> {
-        println!("[EmailJob] Sending email to={} subject={}", self.to, self.subject);
+        println!(
+            "[EmailJob] Sending email to={} subject={}",
+            self.to, self.subject
+        );
         Ok(())
     }
     fn name() -> &'static str {
@@ -42,7 +45,10 @@ impl Job for EmailJob {
 #[async_trait]
 impl Job for ReportJob {
     async fn perform(&self, _ctx: &JobContext) -> Result<()> {
-        println!("[ReportJob] Generating report_id={} format={}", self.report_id, self.format);
+        println!(
+            "[ReportJob] Generating report_id={} format={}",
+            self.report_id, self.format
+        );
         Ok(())
     }
     fn name() -> &'static str {
@@ -56,7 +62,10 @@ impl Job for ReportJob {
 #[async_trait]
 impl Job for NotificationJob {
     async fn perform(&self, _ctx: &JobContext) -> Result<()> {
-        println!("[NotificationJob] Notifying user_id={} message={}", self.user_id, self.message);
+        println!(
+            "[NotificationJob] Notifying user_id={} message={}",
+            self.user_id, self.message
+        );
         Ok(())
     }
     fn name() -> &'static str {
@@ -71,23 +80,27 @@ impl Job for NotificationJob {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::try_init().ok();
     println!("[multi-jobs] Connecting to Redis...");
-    
+
     let redis_url = "redis://localhost:6370".to_string();
     let queue = Queue::new(QueueOptions {
         redis_url: redis_url.clone(),
         ..Default::default()
-    }).await?;
+    })
+    .await?;
 
     // Enqueue jobs to different queues
     println!("\n[multi-jobs] Enqueuing jobs to different queues...");
-    
+
     // Email queue
     let email = EmailJob {
         to: "user@example.com".to_string(),
         subject: "Welcome!".to_string(),
     };
     let email_id = queue.enqueue(email).await?;
-    println!("[multi-jobs] Enqueued EmailJob (id={}) to 'emails' queue", email_id);
+    println!(
+        "[multi-jobs] Enqueued EmailJob (id={}) to 'emails' queue",
+        email_id
+    );
 
     // Report queue
     let report = ReportJob {
@@ -95,7 +108,10 @@ async fn main() -> anyhow::Result<()> {
         format: "pdf".to_string(),
     };
     let report_id = queue.enqueue(report).await?;
-    println!("[multi-jobs] Enqueued ReportJob (id={}) to 'reports' queue", report_id);
+    println!(
+        "[multi-jobs] Enqueued ReportJob (id={}) to 'reports' queue",
+        report_id
+    );
 
     // Notification queue with options
     let notification = NotificationJob {
@@ -108,7 +124,10 @@ async fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
     let notif_id = queue.enqueue_with_options(notification, opts).await?;
-    println!("[multi-jobs] Enqueued NotificationJob (id={}) to 'notifications' queue", notif_id);
+    println!(
+        "[multi-jobs] Enqueued NotificationJob (id={}) to 'notifications' queue",
+        notif_id
+    );
 
     println!("\n[multi-jobs] All jobs enqueued!");
     println!("[multi-jobs] The UI will automatically discover and display all queues");
@@ -118,7 +137,8 @@ async fn main() -> anyhow::Result<()> {
     let ui_queue = Queue::new(QueueOptions {
         redis_url: redis_url.clone(),
         ..Default::default()
-    }).await?;
+    })
+    .await?;
     start_web_ui_simple(ui_queue).await?;
 
     Ok(())

@@ -8,6 +8,7 @@ pub mod backoff;
 pub mod context;
 pub mod error;
 pub mod job;
+pub mod job_log_layer;
 pub mod lua;
 pub mod queue;
 pub mod registry;
@@ -20,13 +21,14 @@ pub use backoff::{Backoff, BackoffStrategy};
 pub use context::{AppContext, JobContext};
 pub use error::{ChainMQError, Result};
 pub use job::JobMetadata;
-pub use job::{Job, JobId, JobOptions, JobState, Priority};
+pub use job::{Job, JobId, JobLogLine, JobOptions, JobState, Priority};
+pub use job_log_layer::{JobLogLayer, job_logs_layer};
 pub use queue::{Queue, QueueOptions};
 pub use registry::JobRegistry;
 pub use worker::{Worker, WorkerBuilder};
 
 #[cfg(feature = "web-ui")]
-pub use web_ui::{start_web_ui, start_web_ui_simple, WebUIConfig};
+pub use web_ui::{WebUIConfig, start_web_ui, start_web_ui_simple};
 
 // Provide a no-op version when web-ui feature is disabled
 #[cfg(not(feature = "web-ui"))]

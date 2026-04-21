@@ -1,5 +1,8 @@
 // src/queue.rs
-use crate::{ChainMQError, Job, JobId, JobMetadata, JobOptions, JobState, Result, lua::LuaScripts};
+use crate::{
+    ChainMQError, Job, JobId, JobLogLine, JobMetadata, JobOptions, JobState, Result,
+    lua::LuaScripts,
+};
 use chrono::Utc;
 use redis::aio::MultiplexedConnection;
 use redis::{AsyncCommands, Client as RedisClient};
@@ -16,6 +19,8 @@ pub struct QueueOptions {
     pub key_prefix: String,
     pub default_concurrency: usize,
     pub max_stalled_interval: u64,
+    /// Max log lines retained per job in Redis (older lines dropped). Used by job log tracing layer.
+    pub job_logs_max_lines: usize,
 }
 
 impl Default for QueueOptions {
@@ -27,6 +32,7 @@ impl Default for QueueOptions {
             key_prefix: "rbq".to_string(),
             default_concurrency: 10,
             max_stalled_interval: 30000, // 30 seconds
+            job_logs_max_lines: 500,
         }
     }
 }
@@ -74,18 +80,14 @@ impl Queue {
         Ok(())
     }
 
-    async fn apply_claimed_metadata(
-        &self,
-        job_id: &JobId,
-        worker_id: &str,
-    ) -> Result<()> {
+    async fn apply_claimed_metadata(&self, job_id: &JobId, worker_id: &str) -> Result<()> {
         let mut metadata = match self.get_job(job_id).await? {
             Some(m) => m,
             None => {
                 return Err(ChainMQError::Worker(format!(
                     "Claimed job {} has no metadata",
                     job_id
-                )))
+                )));
             }
         };
         let now = Utc::now();
@@ -96,11 +98,7 @@ impl Queue {
     }
 
     /// Return a claimed job to the waiting queue (e.g. worker shutdown before execution).
-    pub async fn requeue_claimed_job(
-        &self,
-        job_id: &JobId,
-        queue_name: &str,
-    ) -> Result<()> {
+    pub async fn requeue_claimed_job(&self, job_id: &JobId, queue_name: &str) -> Result<()> {
         let mut conn = self.async_conn.clone();
         let active_key = self.active_key(queue_name);
         let wait_key = self.wait_key(queue_name);
@@ -672,14 +670,55 @@ impl Queue {
             .await
             .map_err(ChainMQError::Redis)?;
 
+        let logs_key = self.job_logs_key(job_id);
         let _: () = conn.del(&job_key).await.map_err(ChainMQError::Redis)?;
+        let _: () = conn.del(&logs_key).await.map_err(ChainMQError::Redis)?;
 
         Ok(())
+    }
+
+    /// Append one log line for a job (Redis list, capped at [`QueueOptions::job_logs_max_lines`]).
+    pub async fn append_job_log_line(&self, job_id: &JobId, line: JobLogLine) -> Result<()> {
+        let mut conn = self.async_conn.clone();
+        let key = self.job_logs_key(job_id);
+        let json = serde_json::to_string(&line)?;
+        let _: () = conn
+            .rpush::<_, _, ()>(&key, json)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        let max = self.options.job_logs_max_lines.max(1) as isize;
+        let _: () = conn
+            .ltrim(&key, -max, -1)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        Ok(())
+    }
+
+    /// Read the last `limit` log lines for a job (newest at the end of the returned vec).
+    pub async fn get_job_logs(&self, job_id: &JobId, limit: usize) -> Result<Vec<JobLogLine>> {
+        let mut conn = self.async_conn.clone();
+        let key = self.job_logs_key(job_id);
+        let take = limit.clamp(1, 10_000) as isize;
+        let raw: Vec<String> = conn
+            .lrange(&key, -take, -1)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        let mut out = Vec::with_capacity(raw.len());
+        for s in raw {
+            if let Ok(line) = serde_json::from_str::<JobLogLine>(&s) {
+                out.push(line);
+            }
+        }
+        Ok(out)
     }
 
     // Redis key helpers
     fn job_key(&self, job_id: &JobId) -> String {
         format!("{}:job:{}", self.options.key_prefix, job_id)
+    }
+
+    fn job_logs_key(&self, job_id: &JobId) -> String {
+        format!("{}:job:{}:logs", self.options.key_prefix, job_id)
     }
 
     fn wait_key(&self, queue_name: &str) -> String {
@@ -776,8 +815,7 @@ impl Queue {
                         updated_metadata.state = JobState::Waiting;
                         updated_metadata.started_at = None;
                         updated_metadata.worker_id = None;
-                        self.save_job_metadata(&job_id, &updated_metadata)
-                            .await?;
+                        self.save_job_metadata(&job_id, &updated_metadata).await?;
 
                         recovered_count += 1;
                         tracing::info!("Recovered job {} - moved from active to waiting", job_id);

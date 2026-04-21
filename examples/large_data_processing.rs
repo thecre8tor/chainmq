@@ -276,13 +276,11 @@ async fn main() -> anyhow::Result<()> {
     let p2 = data_dir.join("fraud_analysis.json");
     store.save_to_file(
         "customer_data_2024",
-        p1.to_str()
-            .expect("examples/data path must be valid UTF-8"),
+        p1.to_str().expect("examples/data path must be valid UTF-8"),
     )?;
     store.save_to_file(
         "urgent_fraud_analysis",
-        p2.to_str()
-            .expect("examples/data path must be valid UTF-8"),
+        p2.to_str().expect("examples/data path must be valid UTF-8"),
     )?;
 
     let redis_url = "redis://localhost:6379";

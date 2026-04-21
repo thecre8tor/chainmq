@@ -7,7 +7,7 @@
 //! With Redis at `REDIS_URL` or default `redis://127.0.0.1:6379`.
 use async_trait::async_trait;
 use chainmq::{
-    Job, JobContext, JobMetadata, JobOptions, JobState, Queue, QueueOptions, Result,
+    Job, JobContext, JobLogLine, JobMetadata, JobOptions, JobState, Queue, QueueOptions, Result,
 };
 use serde::{Deserialize, Serialize};
 
@@ -79,10 +79,7 @@ async fn fail_job_retries_then_failed() {
         .await
         .expect("enqueue");
 
-    queue
-        .claim_job("integration_q", "w1")
-        .await
-        .expect("claim");
+    queue.claim_job("integration_q", "w1").await.expect("claim");
 
     let meta = queue.get_job(&id).await.expect("get").expect("some");
     queue
@@ -117,10 +114,7 @@ async fn process_delayed_moves_to_waiting() {
     let job = TestJob { v: 2 };
     let mut jo = JobOptions::default();
     jo.delay_secs = Some(0);
-    let id = queue
-        .enqueue_with_options(job, jo)
-        .await
-        .expect("enqueue");
+    let id = queue.enqueue_with_options(job, jo).await.expect("enqueue");
 
     let n = queue
         .process_delayed("integration_q")
@@ -137,10 +131,7 @@ async fn process_delayed_moves_to_waiting() {
 async fn requeue_claimed_job() {
     let queue = Queue::new(opts()).await.expect("queue new");
     let id = queue.enqueue(TestJob { v: 3 }).await.expect("enqueue");
-    queue
-        .claim_job("integration_q", "w")
-        .await
-        .expect("claim");
+    queue.claim_job("integration_q", "w").await.expect("claim");
 
     queue
         .requeue_claimed_job(&id, "integration_q")
@@ -163,4 +154,31 @@ async fn list_queues_uses_scan_and_registry() {
         "expected integration_q in {:?}",
         names
     );
+}
+
+#[tokio::test]
+#[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
+async fn job_logs_append_and_read_roundtrip() {
+    let queue = Queue::new(opts()).await.expect("queue new");
+    let id = queue.enqueue(TestJob { v: 5 }).await.expect("enqueue");
+    let line = JobLogLine {
+        ts: "2026-01-01T00:00:00.000Z".to_string(),
+        level: "INFO".to_string(),
+        message: "integration test line".to_string(),
+    };
+    queue
+        .append_job_log_line(&id, line.clone())
+        .await
+        .expect("append");
+    let lines = queue.get_job_logs(&id, 50).await.expect("get logs");
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].message, line.message);
+    assert_eq!(lines[0].level, line.level);
+
+    queue
+        .delete_job(&id, "integration_q")
+        .await
+        .expect("delete");
+    let after = queue.get_job_logs(&id, 50).await.expect("get after del");
+    assert!(after.is_empty());
 }

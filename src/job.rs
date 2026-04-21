@@ -20,6 +20,14 @@ impl std::fmt::Display for JobId {
     }
 }
 
+/// One line of job execution log (stored in Redis, shown in the web UI).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobLogLine {
+    pub ts: String,
+    pub level: String,
+    pub message: String,
+}
+
 /// Job execution priority (reserved for future use — not enforced by the queue yet; FIFO only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Priority {

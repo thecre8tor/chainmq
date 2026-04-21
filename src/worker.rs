@@ -43,6 +43,9 @@ pub struct WorkerBuilder {
     config: WorkerConfig,
     registry: JobRegistry,
     app_context: Option<Arc<dyn AppContext>>,
+    /// When set, the worker uses this queue instead of creating a new one (for example to share
+    /// the same [`Arc<Queue>`] with [`crate::job_logs_layer`]).
+    shared_queue: Option<Arc<Queue>>,
 }
 
 impl WorkerBuilder {
@@ -54,6 +57,7 @@ impl WorkerBuilder {
             config,
             registry,
             app_context: None,
+            shared_queue: None,
         }
     }
 
@@ -65,6 +69,7 @@ impl WorkerBuilder {
             config,
             registry,
             app_context: None,
+            shared_queue: None,
         }
     }
 
@@ -93,16 +98,26 @@ impl WorkerBuilder {
         self
     }
 
+    /// Use an existing queue (same Redis connection settings as in [`WorkerConfig::queue_options`]).
+    pub fn with_shared_queue(mut self, queue: Arc<Queue>) -> Self {
+        self.shared_queue = Some(queue);
+        self
+    }
+
     pub async fn spawn(self) -> Result<Worker> {
         let app_context = self
             .app_context
             .ok_or_else(|| ChainMQError::Worker("App context is required".to_string()))?;
 
-        Worker::new(self.config, self.registry, app_context).await
+        Worker::new(self.config, self.registry, app_context, self.shared_queue).await
     }
 }
 
-/// Job worker that processes queued jobs
+/// Job worker that processes queued jobs.
+///
+/// If the process has no global tracing subscriber when this worker is created, ChainMQ installs
+/// a default one (`EnvFilter` from `RUST_LOG` or `info`, stdout `fmt`, and the Redis job-log layer
+/// for this worker’s queue). See [`crate::job_log_layer`].
 pub struct Worker {
     config: WorkerConfig,
     queue: Arc<Queue>,
@@ -119,8 +134,15 @@ impl Worker {
         config: WorkerConfig,
         registry: JobRegistry,
         app_context: Arc<dyn AppContext>,
+        shared_queue: Option<Arc<Queue>>,
     ) -> Result<Self> {
-        let queue = Arc::new(Queue::new(config.queue_options.clone()).await?);
+        let queue = match shared_queue {
+            Some(q) => q,
+            None => Arc::new(Queue::new(config.queue_options.clone()).await?),
+        };
+        crate::job_log_layer::install_default_subscriber_with_job_logs_if_unset(Arc::clone(
+            &queue,
+        ));
         let semaphore = Arc::new(Semaphore::new(config.concurrency));
         let (shutdown_tx, _) = broadcast::channel(1);
         let is_shutting_down = Arc::new(AtomicBool::new(false));
@@ -412,7 +434,10 @@ impl Worker {
 
                 interval.tick().await;
 
-                match queue.recover_stalled_jobs(&queue_name, max_stalled_interval / 1000).await {
+                match queue
+                    .recover_stalled_jobs(&queue_name, max_stalled_interval / 1000)
+                    .await
+                {
                     Ok(recovered_count) => {
                         if recovered_count > 0 {
                             warn!("Recovered {} stalled jobs", recovered_count);
@@ -456,10 +481,13 @@ impl Worker {
         // Create job context
         let job_context = JobContext::new(job_id.clone(), metadata.clone(), app_context);
 
-        // Execute the job
-        let result = registry
-            .execute_job(&metadata.name, metadata.payload.clone(), &job_context)
-            .await;
+        // Execute the job under the job_execution span so tracing layers can attribute events.
+        let result = {
+            let _job_span = job_context.span.enter();
+            registry
+                .execute_job(&metadata.name, metadata.payload.clone(), &job_context)
+                .await
+        };
 
         let execution_time = start_time.elapsed();
 
@@ -467,9 +495,7 @@ impl Worker {
         match result {
             Ok(()) => {
                 let response = job_context.take_response();
-                queue
-                    .complete_job(&job_id, &queue_name, response)
-                    .await?;
+                queue.complete_job(&job_id, &queue_name, response).await?;
                 info!(
                     "Job {} completed successfully in {:?}",
                     job_id, execution_time
