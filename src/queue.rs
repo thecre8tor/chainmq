@@ -152,6 +152,7 @@ impl Queue {
             failed_at: None,
             last_error: None,
             worker_id: None,
+            response: None,
         };
 
         let mut conn = self.async_conn.clone();
@@ -269,8 +270,14 @@ impl Queue {
         }
     }
 
-    /// Complete a job successfully
-    pub async fn complete_job(&self, job_id: &JobId, queue_name: &str) -> Result<()> {
+    /// Complete a job successfully. `response` is stored on the job metadata (e.g. from
+    /// [`crate::JobContext::set_response`]) and visible in the dashboard API.
+    pub async fn complete_job(
+        &self,
+        job_id: &JobId,
+        queue_name: &str,
+        response: Option<serde_json::Value>,
+    ) -> Result<()> {
         let mut metadata = match self.get_job(job_id).await? {
             Some(m) => m,
             None => return Err(ChainMQError::Worker("Job not found".to_string())),
@@ -284,6 +291,7 @@ impl Queue {
         let now = Utc::now();
         metadata.state = JobState::Completed;
         metadata.completed_at = Some(now);
+        metadata.response = response;
 
         let metadata_json = serde_json::to_string(&metadata)?;
         let _: () = conn

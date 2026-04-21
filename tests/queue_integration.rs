@@ -59,7 +59,7 @@ async fn enqueue_claim_complete_metadata_roundtrip() {
     assert!(meta.started_at.is_some());
 
     queue
-        .complete_job(&id, "integration_q")
+        .complete_job(&id, "integration_q", None)
         .await
         .expect("complete");
 

@@ -37,3 +37,4 @@ pub async fn start_web_ui_simple(_queue: Queue) -> std::io::Result<()> {
 // Re-export commonly used types
 pub use async_trait::async_trait;
 pub use serde::{Deserialize, Serialize};
+pub use serde_json;

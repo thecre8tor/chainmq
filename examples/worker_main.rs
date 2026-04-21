@@ -1,4 +1,6 @@
-use chainmq::{AppContext, Job, JobContext, JobRegistry, Result, WorkerBuilder, async_trait};
+use chainmq::{
+    AppContext, Job, JobContext, JobRegistry, Result, WorkerBuilder, async_trait, serde_json::json,
+};
 use redis::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -22,6 +24,12 @@ impl Job for EmailJob {
                 .send(&self.to, &self.subject, &self.body)
                 .await?;
         }
+        ctx.set_response(json!({
+            "status": "sent",
+            "to": self.to,
+            "subject": self.subject,
+            "message_id": format!("ex-{}", ctx.job_id),
+        }));
         println!("[worker] EmailJob completed for to='{}'", self.to);
         Ok(())
     }

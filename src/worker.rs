@@ -466,7 +466,10 @@ impl Worker {
         // Handle result
         match result {
             Ok(()) => {
-                queue.complete_job(&job_id, &queue_name).await?;
+                let response = job_context.take_response();
+                queue
+                    .complete_job(&job_id, &queue_name, response)
+                    .await?;
                 info!(
                     "Job {} completed successfully in {:?}",
                     job_id, execution_time

@@ -4,7 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ChainMQ Dashboard</title>
-    <link rel="stylesheet" href="styles.css?v=chainmq-ui-5" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css?v=chainmq-ui-19" />
   </head>
   <body>
     <div class="app-container">
@@ -94,7 +100,10 @@
           <!-- Queue Header -->
           <div class="queue-header">
             <div class="queue-title">
-              <h2 id="queue-name-display">Queue Name</h2>
+              <div class="queue-title-text">
+                <span class="queue-eyebrow">Queue</span>
+                <h2 id="queue-name-display">Queue Name</h2>
+              </div>
               <div class="queue-actions">
                 <button
                   id="processDelayedBtn"
@@ -152,9 +161,18 @@
             </div>
           </div>
 
-          <!-- Stats Cards -->
-          <div class="stats-cards">
-            <div class="stat-card" data-state="waiting">
+          <!-- Job state rail (single filter + counts) -->
+          <div
+            class="stats-cards"
+            role="tablist"
+            aria-label="Job state"
+          >
+            <div
+              class="stat-card active"
+              data-state="waiting"
+              role="tab"
+              aria-selected="true"
+            >
               <div class="stat-icon waiting">
                 <svg
                   width="24"
@@ -173,7 +191,12 @@
                 <div class="stat-value" id="stat-waiting">0</div>
               </div>
             </div>
-            <div class="stat-card" data-state="active">
+            <div
+              class="stat-card"
+              data-state="active"
+              role="tab"
+              aria-selected="false"
+            >
               <div class="stat-icon active">
                 <svg
                   width="24"
@@ -191,7 +214,12 @@
                 <div class="stat-value" id="stat-active">0</div>
               </div>
             </div>
-            <div class="stat-card" data-state="delayed">
+            <div
+              class="stat-card"
+              data-state="delayed"
+              role="tab"
+              aria-selected="false"
+            >
               <div class="stat-icon delayed">
                 <svg
                   width="24"
@@ -210,7 +238,12 @@
                 <div class="stat-value" id="stat-delayed">0</div>
               </div>
             </div>
-            <div class="stat-card" data-state="failed">
+            <div
+              class="stat-card"
+              data-state="failed"
+              role="tab"
+              aria-selected="false"
+            >
               <div class="stat-icon failed">
                 <svg
                   width="24"
@@ -230,7 +263,12 @@
                 <div class="stat-value" id="stat-failed">0</div>
               </div>
             </div>
-            <div class="stat-card" data-state="completed">
+            <div
+              class="stat-card"
+              data-state="completed"
+              role="tab"
+              aria-selected="false"
+            >
               <div class="stat-icon completed">
                 <svg
                   width="24"
@@ -254,28 +292,9 @@
           <!-- Jobs Section -->
           <div class="jobs-section">
             <div class="jobs-header">
-              <div class="jobs-tabs">
-                <button class="tab-btn active" data-state="waiting">
-                  <span>Waiting</span>
-                  <span class="tab-count" id="tab-waiting">0</span>
-                </button>
-                <button class="tab-btn" data-state="active">
-                  <span>Active</span>
-                  <span class="tab-count" id="tab-active">0</span>
-                </button>
-                <button class="tab-btn" data-state="delayed">
-                  <span>Delayed</span>
-                  <span class="tab-count" id="tab-delayed">0</span>
-                </button>
-                <button class="tab-btn" data-state="failed">
-                  <span>Failed</span>
-                  <span class="tab-count" id="tab-failed">0</span>
-                </button>
-                <button class="tab-btn" data-state="completed">
-                  <span>Completed</span>
-                  <span class="tab-count" id="tab-completed">0</span>
-                </button>
-              </div>
+              <p id="jobsContextLabel" class="jobs-context-label" aria-live="polite">
+                Showing waiting jobs
+              </p>
               <div class="jobs-controls">
                 <div class="search-wrapper">
                   <svg
@@ -380,73 +399,84 @@
             </div>
           </div>
         </div>
+
+        <!-- Job detail (full page) -->
+        <div id="job-detail-view" class="job-detail-view" style="display: none">
+          <div class="job-detail-toolbar">
+            <button
+              type="button"
+              id="jobDetailBackBtn"
+              class="btn btn-secondary btn-icon job-detail-back"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M19 12H5M12 19l-7-7 7-7" />
+              </svg>
+              Back to queue
+            </button>
+            <div class="job-detail-toolbar-actions">
+              <button
+                type="button"
+                id="copyJobLinkBtn"
+                class="btn btn-secondary btn-sm"
+                title="Copy link to this job"
+              >
+                Copy link
+              </button>
+              <button
+                type="button"
+                id="retryJobBtn"
+                class="btn btn-success btn-icon"
+                style="display: none"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M1 4v6h6M23 20v-6h-6" />
+                  <path
+                    d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"
+                  />
+                </svg>
+                Retry job
+              </button>
+              <button type="button" id="deleteJobBtn" class="btn btn-danger btn-icon">
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <polyline points="3 6 5 6 21 6" />
+                  <path
+                    d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
+                  />
+                </svg>
+                Delete
+              </button>
+            </div>
+          </div>
+          <div class="job-detail-scroll">
+            <div id="jobDetailContent" class="job-detail-content-inner">
+              <p class="job-detail-loading">Loading job…</p>
+            </div>
+          </div>
+        </div>
       </main>
     </div>
 
-    <!-- Job Detail Modal -->
-    <div id="jobModal" class="modal" style="display: none">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h2>Job Details</h2>
-          <button class="modal-close" onclick="closeJobModal()">
-            <svg
-              width="24"
-              height="24"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
-        <div class="modal-body" id="jobDetails"></div>
-        <div class="modal-footer">
-          <button
-            id="retryJobBtn"
-            class="btn btn-success"
-            style="display: none"
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path d="M1 4v6h6M23 20v-6h-6" />
-              <path
-                d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"
-              />
-            </svg>
-            Retry Job
-          </button>
-          <button id="deleteJobBtn" class="btn btn-danger">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <polyline points="3 6 5 6 21 6" />
-              <path
-                d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
-              />
-            </svg>
-            Delete Job
-          </button>
-          <button class="btn btn-secondary" onclick="closeJobModal()">
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <script src="app.js?v=chainmq-ui-5"></script>
+    <script src="app.js?v=chainmq-ui-19"></script>
   </body>
 </html>

@@ -1,6 +1,6 @@
 // src/context.rs
 use crate::{JobId, JobMetadata};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::Span;
 
 /// Application context containing shared resources
@@ -15,6 +15,7 @@ pub struct JobContext {
     pub job_metadata: JobMetadata,
     pub app_context: Arc<dyn AppContext>,
     pub span: Span,
+    response: Arc<Mutex<Option<serde_json::Value>>>,
 }
 
 impl JobContext {
@@ -31,7 +32,20 @@ impl JobContext {
             job_metadata,
             app_context,
             span,
+            response: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Attach a JSON-serializable result to this run. It is persisted on the job when it completes
+    /// successfully (overwrites any previous value set during this execution).
+    pub fn set_response(&self, value: serde_json::Value) {
+        if let Ok(mut slot) = self.response.lock() {
+            *slot = Some(value);
+        }
+    }
+
+    pub(crate) fn take_response(&self) -> Option<serde_json::Value> {
+        self.response.lock().ok().and_then(|mut g| g.take())
     }
 
     /// Get typed app context

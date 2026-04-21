@@ -1,6 +1,6 @@
 use chainmq::{
     Job, JobContext, JobOptions, Priority, Queue, QueueOptions, Result, async_trait,
-    start_web_ui_simple,
+    serde_json::json, start_web_ui_simple,
 };
 use serde::{Deserialize, Serialize};
 
@@ -13,11 +13,16 @@ struct EmailJob {
 
 #[async_trait]
 impl Job for EmailJob {
-    async fn perform(&self, _ctx: &JobContext) -> Result<()> {
+    async fn perform(&self, ctx: &JobContext) -> Result<()> {
         println!(
             "[worker] (example perform) to='{}' subject='{}'",
             self.to, self.subject
         );
+        ctx.set_response(json!({
+            "simulated": true,
+            "to": self.to,
+            "subject": self.subject,
+        }));
         Ok(())
     }
     fn name() -> &'static str {
@@ -39,9 +44,10 @@ async fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
     let queue = Queue::new(options).await?;
+    let queue_name = EmailJob::queue_name();
     println!(
         "[enqueue] Connected to Redis and initialized queue '{}'.",
-        EmailJob::queue_name()
+        queue_name
     );
 
     let job = EmailJob {
@@ -58,18 +64,30 @@ async fn main() -> anyhow::Result<()> {
         subject: "Urgent".into(),
         body: "Please read".into(),
     };
+
+    let response = json!({
+        "status": "sent",
+        "to": &urgent.to,
+        "subject": &urgent.subject,
+    });
+
     let opts = JobOptions {
         delay_secs: Some(60),
         priority: Priority::High,
         attempts: 5,
         ..Default::default()
     };
+
     println!("[enqueue] Enqueuing delayed/high-priority EmailJob (delay=60s, attempts=5)...");
     let job_id2 = queue.enqueue_with_options(urgent, opts).await?;
     println!(
         "[enqueue] Enqueued delayed EmailJob with id={} — done.",
         job_id2
     );
+
+    let _ = queue
+        .complete_job(&job_id2, queue_name, Some(response))
+        .await?;
 
     println!("\n[enqueue] Jobs have been enqueued!");
 

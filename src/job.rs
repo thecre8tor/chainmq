@@ -88,6 +88,9 @@ pub struct JobMetadata {
     pub failed_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
     pub worker_id: Option<String>,
+    /// Set via [`crate::JobContext::set_response`] before the job completes successfully.
+    #[serde(default)]
+    pub response: Option<serde_json::Value>,
 }
 
 /// Core trait that all jobs must implement
