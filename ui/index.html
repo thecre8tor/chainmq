@@ -4,13 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ChainMQ Dashboard</title>
+    <link
+      rel="icon"
+      href="favicon.svg?v=chainmq-ui-1"
+      type="image/svg+xml"
+    />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="styles.css?v=chainmq-ui-26" />
+    <link rel="stylesheet" href="styles.css?v=chainmq-ui-30" />
   </head>
   <body>
     <div
@@ -54,8 +59,14 @@
       </form>
     </div>
     <div class="app-container" id="appContainer">
-      <!-- Sidebar -->
-      <aside class="sidebar" aria-label="Queues navigation">
+      <div
+        id="sidebarBackdrop"
+        class="sidebar-backdrop"
+        hidden
+        aria-hidden="true"
+      ></div>
+      <!-- Sidebar (off-canvas on narrow viewports) -->
+      <aside class="sidebar" id="sidebarNavDrawer" aria-label="Queues navigation">
         <div class="sidebar-header">
           <button
             type="button"
@@ -163,6 +174,45 @@
 
       <!-- Main Content -->
       <main class="main-content">
+        <header class="mobile-chrome" aria-label="Mobile toolbar">
+          <div class="mobile-chrome-brand">
+            <svg
+              class="mobile-chrome-mark"
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              aria-hidden="true"
+            >
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+            </svg>
+            <span class="mobile-chrome-title">ChainMQ</span>
+          </div>
+          <button
+            type="button"
+            id="mobileNavOpenBtn"
+            class="icon-btn mobile-nav-open-btn"
+            aria-expanded="false"
+            aria-controls="sidebarNavDrawer"
+            title="Open menu"
+            aria-label="Open menu"
+          >
+            <svg
+              class="mobile-nav-open-icon"
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              aria-hidden="true"
+            >
+              <path d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+        </header>
         <div id="empty-state" class="empty-state-main">
           <div class="empty-icon">
             <svg
@@ -384,6 +434,17 @@
                 Showing Completed jobs
               </p>
               <div class="jobs-controls">
+                <select
+                  id="pageSizeSelect"
+                  class="page-size-select"
+                  aria-label="Jobs per page"
+                  title="Jobs per page"
+                >
+                  <option value="10">10</option>
+                  <option value="25" selected>25</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
                 <div class="search-wrapper">
                   <svg
                     width="16"
@@ -392,6 +453,7 @@
                     fill="none"
                     stroke="currentColor"
                     stroke-width="2"
+                    aria-hidden="true"
                   >
                     <circle cx="11" cy="11" r="8" />
                     <path d="m21 21-4.35-4.35" />
@@ -403,12 +465,6 @@
                     placeholder="Search jobs..."
                   />
                 </div>
-                <select id="pageSizeSelect" class="page-size-select">
-                  <option value="10">10</option>
-                  <option value="25" selected>25</option>
-                  <option value="50">50</option>
-                  <option value="100">100</option>
-                </select>
               </div>
             </div>
 
@@ -607,6 +663,6 @@
       </main>
     </div>
 
-    <script src="app.js?v=chainmq-ui-23"></script>
+    <script src="app.js?v=chainmq-ui-25"></script>
   </body>
 </html>

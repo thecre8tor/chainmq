@@ -456,7 +456,7 @@ async fn process_delayed(
     }
 }
 
-/// Static files (`index.html`, `app.js`, `styles.css`) are served from this path
+/// Static files (`index.html`, `app.js`, `styles.css`, `favicon.svg`, …) are served from this path
 /// relative to the process working directory. Not configurable via the public API.
 const UI_STATIC_DIR: &str = "./ui";
 

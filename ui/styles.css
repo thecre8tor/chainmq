@@ -120,6 +120,18 @@
   box-sizing: border-box;
 }
 
+html {
+  height: 100%;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html:focus-within {
+    scroll-behavior: smooth;
+  }
+}
+
 html[data-theme="light"] {
   color-scheme: light;
 }
@@ -131,6 +143,9 @@ html[data-theme="dark"] {
 body {
   font-family: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",
     "Helvetica Neue", Arial, sans-serif;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
   background-color: var(--surface-page);
   background-image: var(--canvas-spotlight);
   background-attachment: fixed;
@@ -142,7 +157,20 @@ body {
 .app-container {
   display: flex;
   height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  max-height: 100dvh;
   overflow: hidden;
+  padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0)
+    env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0);
+}
+
+.sidebar-backdrop {
+  display: none;
+}
+
+.mobile-chrome {
+  display: none;
 }
 
 /* Sidebar */
@@ -232,6 +260,7 @@ body {
   align-items: center;
   justify-content: center;
   transition: background-color 0.15s ease, color 0.15s ease;
+  touch-action: manipulation;
 }
 
 .icon-btn:hover {
@@ -517,7 +546,7 @@ body {
   min-height: 0;
   overflow-y: auto;
   color: var(--text-secondary);
-  padding: 48px 40px;
+  padding: clamp(28px, 6vw, 48px) clamp(20px, 5vw, 40px);
 }
 
 .empty-icon {
@@ -545,7 +574,7 @@ body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 36px 32px 48px;
+  padding: clamp(20px, 4vw, 36px) clamp(16px, 3vw, 32px) clamp(28px, 5vw, 48px);
   width: 100%;
   max-width: none;
   margin: 0;
@@ -558,7 +587,7 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 20px 28px 28px;
+  padding: clamp(16px, 3vw, 20px) clamp(14px, 2.5vw, 28px) clamp(20px, 3vw, 28px);
   width: 100%;
   max-width: none;
   margin: 0;
@@ -1517,7 +1546,7 @@ body {
 }
 
 .queue-header {
-  margin-bottom: 36px;
+  margin-bottom: clamp(20px, 4vw, 36px);
 }
 
 .queue-title {
@@ -1558,7 +1587,9 @@ body {
   flex-wrap: wrap;
   align-items: center;
   flex-shrink: 0;
+  justify-content: flex-end;
 }
+
 
 /* Job state rail (single strip: filter + counts) */
 .stats-cards {
@@ -1567,7 +1598,7 @@ body {
   align-items: stretch;
   gap: 8px;
   padding: 8px;
-  margin-bottom: 32px;
+  margin-bottom: clamp(20px, 3.5vw, 32px);
   background: var(--surface-inset);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
@@ -1735,7 +1766,7 @@ body {
 }
 
 .stat-value {
-  font-size: 30px;
+  font-size: clamp(22px, 5vw, 30px);
   font-weight: 700;
   color: var(--text-primary);
   line-height: 1;
@@ -1776,14 +1807,19 @@ body {
 
 .jobs-controls {
   display: flex;
-  gap: 10px;
+  flex-wrap: nowrap;
   align-items: center;
+  gap: 14px;
+  min-width: 0;
 }
 
 .search-wrapper {
   position: relative;
   display: flex;
   align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: min(360px, 100%);
 }
 
 .search-wrapper svg {
@@ -1798,8 +1834,8 @@ body {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   font-size: 14px;
-  width: 280px;
-  max-width: 100%;
+  width: 100%;
+  min-width: 0;
   height: 42px;
   background: var(--bg-primary);
   color: var(--text-primary);
@@ -1819,6 +1855,7 @@ body {
   border-radius: var(--radius-md);
   font-size: 14px;
   height: 42px;
+  flex-shrink: 0;
   background: var(--bg-primary);
   color: var(--text-primary);
   cursor: pointer;
@@ -2002,6 +2039,7 @@ body {
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
+  touch-action: manipulation;
   transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease,
     box-shadow 0.15s ease;
   display: inline-flex;
@@ -2179,10 +2217,92 @@ body {
   }
 }
 
-/* Responsive */
+/* Tablet: slightly denser chrome, room for main column */
+@media (max-width: 1024px) {
+  .queue-title {
+    gap: 14px;
+  }
+
+  .jobs-header {
+    padding: 18px 20px;
+  }
+
+  .jobs-table th,
+  .jobs-table td {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .pagination {
+    padding: 16px 20px;
+  }
+}
+
+/* Narrow main: stack queue actions, fluid stat rail */
+@media (max-width: 640px) {
+  .queue-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .queue-actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+    min-width: 0;
+  }
+
+  .stat-icon {
+    width: 44px;
+    height: 44px;
+  }
+
+  .stat-icon svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .stat-card {
+    padding: 12px 14px;
+    gap: 10px;
+  }
+}
+
+/* Responsive — sidebar becomes off-canvas drawer */
 @media (max-width: 768px) {
   .app-container {
-    flex-direction: column;
+    flex-direction: row;
+    position: relative;
+  }
+
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    margin: 0;
+    border: none;
+    padding: 0;
+    background: color-mix(in srgb, var(--bg-primary) 55%, #000 45%);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.22s ease, visibility 0.22s ease;
+  }
+
+  .app-container.mobile-nav-open .sidebar-backdrop {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .sidebar-backdrop:focus {
+    outline: none;
+  }
+
+  body.mobile-nav-lock {
+    overflow: hidden;
   }
 
   .sidebar-collapse-btn {
@@ -2190,10 +2310,76 @@ body {
   }
 
   .sidebar {
-    width: 100%;
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 50;
+    width: min(var(--sidebar-width), min(320px, 88vw));
     min-width: 0;
-    height: auto;
-    max-height: 220px;
+    height: 100dvh;
+    max-height: none;
+    padding-top: env(safe-area-inset-top, 0);
+    padding-bottom: env(safe-area-inset-bottom, 0);
+    border-right: 1px solid var(--sidebar-border);
+    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.35);
+    transform: translateX(-100%);
+    transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .app-container.mobile-nav-open .sidebar {
+    transform: translateX(0);
+  }
+
+  .mobile-chrome {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-shrink: 0;
+    min-height: 0;
+    padding: 10px 12px 10px 10px;
+    padding-left: max(10px, env(safe-area-inset-left, 0));
+    padding-right: max(10px, env(safe-area-inset-right, 0));
+    border-bottom: 1px solid color-mix(in srgb, var(--border-color) 75%, transparent);
+    background: color-mix(in srgb, var(--surface-panel) 92%, var(--surface-page));
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+
+  .mobile-chrome-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .mobile-chrome-mark {
+    flex-shrink: 0;
+    display: block;
+    color: var(--primary-color);
+  }
+
+  .mobile-nav-open-btn {
+    flex-shrink: 0;
+    color: var(--text-secondary);
+  }
+
+  .mobile-chrome-title {
+    min-width: 0;
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .main-content {
+    flex: 1;
+    min-width: 0;
+    width: 100%;
   }
 
   .stats-cards {
@@ -2202,7 +2388,6 @@ body {
   }
 
   .stat-card {
-    min-width: 132px;
     padding: 14px 14px;
   }
 
@@ -2217,10 +2402,18 @@ body {
 
   .jobs-controls {
     width: 100%;
+    flex-wrap: nowrap;
+  }
+
+  .search-wrapper {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: none;
   }
 
   .search-input {
     width: 100%;
+    max-width: none;
   }
 
   .queue-view {
@@ -2255,6 +2448,89 @@ body {
   }
 }
 
+@media (max-width: 768px) and (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .sidebar-backdrop {
+    transition: none;
+  }
+}
+
+/* Scrollable stat chips between 521px and 768px wide viewports */
+@media (max-width: 768px) and (min-width: 521px) {
+  .stat-card {
+    min-width: 132px;
+  }
+}
+
+/* Small phones: stat rail as a 2-col grid (no horizontal scrubbing) */
+@media (max-width: 520px) {
+  .stats-cards {
+    flex-wrap: wrap;
+    overflow-x: visible;
+    justify-content: stretch;
+  }
+
+  .stat-card {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .stat-card:nth-child(5):last-child {
+    flex: 1 1 100%;
+  }
+
+  .jobs-table-container {
+    max-height: min(58vh, 560px);
+  }
+
+  .job-detail-log-line {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px 8px;
+  }
+
+  .job-detail-log-ts {
+    font-size: 10px;
+  }
+}
+
+@media (max-width: 400px) {
+  .jobs-table th,
+  .jobs-table td {
+    padding: 12px 10px;
+    font-size: 13px;
+  }
+
+  .jobs-table th.col-select,
+  .jobs-table td.col-select {
+    padding-left: 10px;
+    padding-right: 8px;
+  }
+
+  .pagination {
+    flex-direction: column;
+    align-items: stretch;
+    text-align: center;
+  }
+
+  .pagination .page-info {
+    order: -1;
+  }
+
+  .job-detail-dl--compact {
+    grid-template-columns: 1fr;
+    gap: 2px 0;
+  }
+
+  .job-detail-dl--compact dt {
+    margin-top: 10px;
+  }
+
+  .job-detail-dl--compact dt:first-child {
+    margin-top: 0;
+  }
+}
+
 /* ——— Job detail v2: toolbar meta, tabs, hero, grid, cards, logs ——— */
 
 .job-detail-toolbar-start {
@@ -2281,7 +2557,7 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 280px;
+  max-width: min(280px, 100%);
 }
 
 .job-detail-toolbar-id {

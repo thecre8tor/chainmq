@@ -48,6 +48,7 @@ async function fetchAuthSession() {
 }
 
 function showLoginOverlay(message) {
+  closeMobileNav();
   const overlay = document.getElementById("loginOverlay");
   if (!overlay) return;
   overlay.hidden = false;
@@ -604,19 +605,11 @@ function toggleTheme() {
 }
 
 function updateThemeIcon(theme) {
+  const moon = `<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>`;
+  const sun = `<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>`;
+  const html = theme === "dark" ? moon : sun;
   const icon = document.getElementById("themeIcon");
-  if (!icon) return;
-
-  if (theme === "dark") {
-    icon.innerHTML = `
-      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-    `;
-  } else {
-    icon.innerHTML = `
-      <circle cx="12" cy="12" r="5"/>
-      <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
-    `;
-  }
+  if (icon) icon.innerHTML = html;
 }
 
 function syncSidebarCollapseButton() {
@@ -651,6 +644,105 @@ function toggleSidebarCollapsed() {
   const app = document.getElementById("appContainer");
   if (!app) return;
   setSidebarCollapsed(!app.classList.contains("sidebar-collapsed"));
+}
+
+const mobileNavMq = window.matchMedia("(max-width: 768px)");
+
+function refreshDashboard() {
+  if (jobDetailActive && currentJobId) {
+    void loadJobDetailPageContent({ silent: true });
+  } else if (currentQueue) {
+    loadQueueStats();
+    loadJobs();
+  } else {
+    loadQueues();
+  }
+}
+
+/** Off-canvas sidebar: open/close (no-op when viewport is not mobile layout). */
+function setMobileNavOpen(open) {
+  const app = document.getElementById("appContainer");
+  const backdrop = document.getElementById("sidebarBackdrop");
+  const btn = document.getElementById("mobileNavOpenBtn");
+  const sidebar = document.getElementById("sidebarNavDrawer");
+  if (!app) return;
+
+  if (!mobileNavMq.matches) {
+    app.classList.remove("mobile-nav-open");
+    if (backdrop) {
+      backdrop.hidden = true;
+      backdrop.setAttribute("aria-hidden", "true");
+    }
+    if (btn) {
+      btn.setAttribute("aria-expanded", "false");
+      btn.title = "Open menu";
+      btn.setAttribute("aria-label", "Open menu");
+    }
+    document.body.classList.remove("mobile-nav-lock");
+    if (sidebar) {
+      sidebar.removeAttribute("inert");
+      sidebar.removeAttribute("aria-hidden");
+    }
+    return;
+  }
+
+  app.classList.toggle("mobile-nav-open", open);
+  if (backdrop) {
+    backdrop.hidden = !open;
+    backdrop.setAttribute("aria-hidden", open ? "false" : "true");
+  }
+  if (btn) {
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    btn.title = open ? "Close menu" : "Open menu";
+    btn.setAttribute("aria-label", open ? "Close menu" : "Open menu");
+  }
+  document.body.classList.toggle("mobile-nav-lock", open);
+  if (sidebar) {
+    if (open) {
+      sidebar.removeAttribute("inert");
+      sidebar.setAttribute("aria-hidden", "false");
+    } else {
+      sidebar.setAttribute("inert", "");
+      sidebar.setAttribute("aria-hidden", "true");
+    }
+  }
+}
+
+function toggleMobileNav() {
+  const app = document.getElementById("appContainer");
+  if (!app || !mobileNavMq.matches) return;
+  setMobileNavOpen(!app.classList.contains("mobile-nav-open"));
+}
+
+function closeMobileNav() {
+  setMobileNavOpen(false);
+}
+
+function initMobileNavLayout() {
+  mobileNavMq.addEventListener("change", () => {
+    setMobileNavOpen(false);
+  });
+
+  const backdrop = document.getElementById("sidebarBackdrop");
+  if (backdrop) {
+    backdrop.addEventListener("click", () => setMobileNavOpen(false));
+  }
+
+  const openBtn = document.getElementById("mobileNavOpenBtn");
+  if (openBtn) {
+    openBtn.addEventListener("click", toggleMobileNav);
+  }
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const app = document.getElementById("appContainer");
+    if (app?.classList.contains("mobile-nav-open")) {
+      e.preventDefault();
+      setMobileNavOpen(false);
+    }
+  });
+
+  setMobileNavOpen(false);
 }
 
 function wireLoginFormOnce() {
@@ -758,16 +850,9 @@ function setupEventListeners() {
   }
 
   // Refresh button
-  document.getElementById("refreshBtn").addEventListener("click", () => {
-    if (jobDetailActive && currentJobId) {
-      void loadJobDetailPageContent({ silent: true });
-    } else if (currentQueue) {
-      loadQueueStats();
-      loadJobs();
-    } else {
-      loadQueues();
-    }
-  });
+  document.getElementById("refreshBtn").addEventListener("click", refreshDashboard);
+
+  initMobileNavLayout();
 
   // Stat cards / state rail — keyboard accessible tabs
   document.querySelectorAll(".stat-card").forEach((card) => {
@@ -1109,6 +1194,7 @@ async function loadQueueStatsForSidebar(queueName) {
 }
 
 function selectQueue(queueName) {
+  closeMobileNav();
   jobDetailActive = false;
   currentJobId = null;
   detailJob = null;
@@ -1319,6 +1405,8 @@ async function openJobDetailPage(queueName, jobId, opts = {}) {
   ) {
     return;
   }
+
+  closeMobileNav();
 
   jobDetailSelectedTab = "details";
 
