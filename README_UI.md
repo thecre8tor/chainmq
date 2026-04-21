@@ -1,0 +1,169 @@
+# ChainMQ Web UI
+
+The ChainMQ Web UI provides a modern, BullMQ-style dashboard for monitoring and managing your job queues.
+
+## Features
+
+- 🎨 Modern, classy UI with light/dark mode
+- 📊 Real-time queue statistics
+- 🔍 Job search and filtering
+- 📄 Pagination for large job lists
+- ⚡ Queue actions (clean, recover stalled, process delayed)
+- 🔄 Auto-refresh every 3 seconds
+- 📱 Responsive design
+
+## Quick Start
+
+### 1. Enable the web-ui feature
+
+Add the `web-ui` feature to your `Cargo.toml`:
+
+```toml
+[dependencies]
+chainmq = { version = "0.2.0", features = ["web-ui"] }
+```
+
+### 2. Start the UI server
+
+```rust
+use chainmq::{Queue, QueueOptions, start_web_ui, WebUIConfig};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Create your queue
+    let queue = Queue::new(QueueOptions {
+        redis_url: "redis://localhost:6379".to_string(),
+        ..Default::default()
+    }).await?;
+
+    let ui_config = WebUIConfig {
+        port: 8080,
+        ui_path: "/dashboard".to_string(),
+        ..Default::default()
+    };
+
+    // Start the server
+    start_web_ui(queue, ui_config).await?.await?;
+
+    Ok(())
+}
+```
+
+### 3. Access the Dashboard
+
+Open your browser and navigate to:
+- **UI**: `http://127.0.0.1:8080/dashboard`
+- **API**: `http://127.0.0.1:8080/dashboard/api`
+
+## Configuration Options
+
+### WebUIConfig
+
+Only **port** and **HTTP base path** (`ui_path`) are configurable. Static assets are always loaded from **`./ui`** relative to the process current working directory (see [UI files](#ui-files)).
+
+```rust
+pub struct WebUIConfig {
+    /// Port to bind the server to (default: 8080)
+    pub port: u16,
+
+    /// Base path for the UI (default: "/")
+    /// Examples: "/dashboard", "/admin/queues", "/monitoring"
+    pub ui_path: String,
+}
+```
+
+### Examples
+
+#### Default Configuration (Root Path)
+
+```rust
+let config = WebUIConfig::default();
+// UI: http://127.0.0.1:8080/
+// API: http://127.0.0.1:8080/api
+```
+
+#### Custom Dashboard Path
+
+```rust
+let config = WebUIConfig {
+    port: 8080,
+    ui_path: "/dashboard".to_string(),
+    ..Default::default()
+};
+// UI: http://127.0.0.1:8080/dashboard
+// API: http://127.0.0.1:8080/dashboard/api
+```
+
+#### Custom Port and Path
+
+```rust
+let config = WebUIConfig {
+    port: 3000,
+    ui_path: "/admin/queues".to_string(),
+    ..Default::default()
+};
+// UI: http://127.0.0.1:3000/admin/queues
+// API: http://127.0.0.1:3000/admin/queues/api
+```
+
+## UI files
+
+The dashboard expects these files under **`./ui`** (relative to the working directory when the process starts):
+
+- `index.html` — main HTML structure
+- `app.js` — frontend logic
+- `styles.css` — styling
+
+Copy or symlink the [`ui/`](./ui/) directory from this repository next to your binary, or run from the project root during development. The API base path follows `ui_path` (e.g. `{ui_path}/api`).
+
+## API Endpoints
+
+All API endpoints are prefixed with `{ui_path}/api`:
+
+- `GET /api/queues` - List all queues
+- `GET /api/queues/{queue_name}/stats` - Get queue statistics
+- `GET /api/queues/{queue_name}/jobs/{state}` - List jobs by state
+- `GET /api/jobs/{job_id}` - Get job details
+- `POST /api/jobs/{job_id}/retry` - Retry a failed job
+- `DELETE /api/jobs/{job_id}/delete` - Delete a job
+- `POST /api/queues/clean` - Clean jobs by state
+- `POST /api/queues/{queue_name}/recover-stalled` - Recover stalled jobs
+- `POST /api/queues/{queue_name}/process-delayed` - Process delayed jobs
+
+## Running in Production
+
+For production use, consider:
+
+1. **Reverse Proxy**: Use nginx or similar to handle SSL/TLS
+2. **Authentication**: Add authentication middleware before starting the UI
+3. **Static assets**: Ensure a `./ui` directory (with the three files above) exists relative to the process working directory—e.g. copy or symlink the `ui` folder beside your binary and set the service `WorkingDirectory` accordingly
+
+Example with environment variables for **port** and **path** only:
+
+```rust
+let config = WebUIConfig {
+    port: std::env::var("UI_PORT")
+        .unwrap_or_else(|_| "8080".to_string())
+        .parse()
+        .unwrap_or(8080),
+    ui_path: std::env::var("UI_PATH").unwrap_or_else(|_| "/".to_string()),
+};
+```
+
+## Troubleshooting
+
+### UI not loading
+
+- Ensure `./ui` exists from the process working directory and contains `index.html`, `app.js`, and `styles.css`
+- Check browser console for errors
+
+### API calls failing
+
+- Verify the API path matches your `ui_path` configuration
+- Check that the queue is properly initialized
+- Ensure Redis is accessible
+
+### Port already in use
+
+- Change the `port` in `WebUIConfig`
+- Or stop the process using that port

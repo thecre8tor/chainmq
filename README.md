@@ -14,6 +14,7 @@ This crate is library-first. Runnable examples demonstrate typical patterns (sin
 - ⏰ Delayed jobs: Schedule jobs for future execution with atomic operations
 - 🗄️ Backoff strategies: Configurable retry logic for failed jobs
 - 📊 Application Context: Share application state across jobs
+- 🖥️ Web UI: Beautiful dashboard for monitoring and managing queues
 
 ## Quick Start:
 
@@ -198,6 +199,10 @@ cargo run --example failure_retry
 
 # Delayed jobs demonstration
 cargo run --example delayed_jobs
+
+# Web UI dashboard for monitoring and managing queues
+cargo run --example web_ui
+# Then open http://127.0.0.1:8080 in your browser
 ```
 
 **Notes:**
@@ -278,15 +283,17 @@ let job = EmailJob {
 
 let opts = JobOptions {
     delay_secs: Some(60),
-    priority: Priority::High,
+    priority: Priority::High, // stored for forward compatibility; FIFO queue does not reorder by priority yet
     attempts: 5,
     backoff: BackoffStrategy::Exponential { base: 2, cap: 10 },
     timeout_secs: Some(60),
-    rate_limit_key: Some("i_rater".to_string()),
+    rate_limit_key: None, // reserved for future use — not enforced by the worker
 };
 
 let job_id = queue.enqueue_with_options(job, opts).await?;
 ```
+
+> **Note:** `priority` and `rate_limit_key` are persisted on job metadata but **not yet enforced** by ChainMQ (the wait queue is FIFO). Use application-level logic if you need strict prioritization or rate limits today.
 
 ## Advanced Usage
 

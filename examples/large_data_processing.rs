@@ -2,6 +2,7 @@ use redis::Client;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Write;
+use std::path::PathBuf;
 use std::{collections::HashMap, sync::Arc};
 use uuid::Uuid;
 
@@ -266,9 +267,23 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Save to files for inspection
-    store.save_to_file("customer_data_2024", "customer_data_2024.json")?;
-    store.save_to_file("urgent_fraud_analysis", "fraud_analysis.json")?;
+    // Save under examples/data/ (next to this example), not the crate root
+    let data_dir: PathBuf = [env!("CARGO_MANIFEST_DIR"), "examples", "data"]
+        .iter()
+        .collect();
+    std::fs::create_dir_all(&data_dir)?;
+    let p1 = data_dir.join("customer_data_2024.json");
+    let p2 = data_dir.join("fraud_analysis.json");
+    store.save_to_file(
+        "customer_data_2024",
+        p1.to_str()
+            .expect("examples/data path must be valid UTF-8"),
+    )?;
+    store.save_to_file(
+        "urgent_fraud_analysis",
+        p2.to_str()
+            .expect("examples/data path must be valid UTF-8"),
+    )?;
 
     let redis_url = "redis://localhost:6379";
     let concurrency = 5usize;

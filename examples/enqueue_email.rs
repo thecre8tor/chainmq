@@ -1,4 +1,7 @@
-use chainmq::{Job, JobContext, JobOptions, Priority, Queue, QueueOptions, Result, async_trait};
+use chainmq::{
+    Job, JobContext, JobOptions, Priority, Queue, QueueOptions, Result, async_trait,
+    start_web_ui_simple,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -30,8 +33,9 @@ async fn main() -> anyhow::Result<()> {
     // Initialize logging to see library tracing output if any
     tracing_subscriber::fmt::try_init().ok();
     println!("[enqueue] Preparing QueueOptions and connecting to Redis...");
+    let redis_url = "redis://localhost:6370".to_string();
     let options = QueueOptions {
-        redis_url: "redis://localhost:6379".to_string(),
+        redis_url: redis_url.clone(),
         ..Default::default()
     };
     let queue = Queue::new(options).await?;
@@ -66,6 +70,16 @@ async fn main() -> anyhow::Result<()> {
         "[enqueue] Enqueued delayed EmailJob with id={} — done.",
         job_id2
     );
+
+    println!("\n[enqueue] Jobs have been enqueued!");
+
+    // Start the web UI - it blocks until Ctrl+C, keeping the process alive
+    let ui_queue = Queue::new(QueueOptions {
+        redis_url: redis_url.clone(),
+        ..Default::default()
+    })
+    .await?;
+    start_web_ui_simple(ui_queue).await?;
 
     Ok(())
 }

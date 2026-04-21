@@ -57,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
     let mut reg_reports = JobRegistry::new();
     reg_reports.register::<ReportJob>();
 
-    let redis = option_env!("REDIS_URL").unwrap_or("redis://localhost:6379");
+    let redis = option_env!("REDIS_URL").unwrap_or("redis://localhost:6370");
 
     let mut w_emails = WorkerBuilder::new_with_redis_uri(redis, reg_emails)
         .with_app_context(app.clone())

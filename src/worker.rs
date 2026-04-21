@@ -112,7 +112,6 @@ pub struct Worker {
     handles: Vec<JoinHandle<()>>,
     shutdown_tx: broadcast::Sender<()>,
     is_shutting_down: Arc<AtomicBool>,
-    active_jobs: Arc<Semaphore>,
 }
 
 impl Worker {
@@ -125,7 +124,6 @@ impl Worker {
         let semaphore = Arc::new(Semaphore::new(config.concurrency));
         let (shutdown_tx, _) = broadcast::channel(1);
         let is_shutting_down = Arc::new(AtomicBool::new(false));
-        let active_jobs = Arc::new(Semaphore::new(0)); // Start at 0, increment for each job
 
         Ok(Self {
             config,
@@ -136,7 +134,6 @@ impl Worker {
             handles: Vec::new(),
             shutdown_tx,
             is_shutting_down,
-            active_jobs,
         })
     }
 
@@ -168,7 +165,6 @@ impl Worker {
         let mut shutdown_rx = self.shutdown_tx.subscribe();
         shutdown_rx.recv().await.ok();
 
-        // 🛑 Graceful shutdown initiated
         self.graceful_shutdown().await;
 
         Ok(())
@@ -213,28 +209,26 @@ impl Worker {
         }
     }
 
-    /// Perform graceful shutdown
+    /// Perform graceful shutdown: stop claiming, let background tasks exit, then drain in-flight work.
     async fn graceful_shutdown(&mut self) {
         info!(
             "Initiating graceful shutdown for worker {}",
             self.config.worker_id
         );
 
-        // 🛑 Step 1: Set shutdown flag (stop accepting new jobs)
         self.is_shutting_down.store(true, Ordering::SeqCst);
         info!("Worker stopped accepting new jobs");
 
-        // 🛑 Step 2: Cancel background tasks (polling, delayed processing, etc.)
-        for handle in self.handles.drain(..) {
-            handle.abort();
+        let handles = std::mem::take(&mut self.handles);
+        for h in handles {
+            let _ = h.await;
         }
-        info!("Background tasks cancelled");
+        info!("Background tasks finished");
 
-        // 🛑 Step 3: Wait for active jobs to complete (with timeout)
         let active_job_count = self.config.concurrency - self.semaphore.available_permits();
         if active_job_count > 0 {
             info!(
-                "Waiting for {} active jobs to complete...",
+                "Waiting for {} in-flight jobs to complete...",
                 active_job_count
             );
 
@@ -244,9 +238,7 @@ impl Worker {
             )
             .await
             {
-                Ok(_) => {
-                    info!("All jobs completed successfully during shutdown");
-                }
+                Ok(_) => info!("All in-flight jobs completed during shutdown"),
                 Err(_) => {
                     let remaining = self.config.concurrency - self.semaphore.available_permits();
                     warn!(
@@ -255,9 +247,9 @@ impl Worker {
                     );
                 }
             }
-
-            info!("Worker {} shutdown complete", self.config.worker_id);
         }
+
+        info!("Worker {} shutdown complete", self.config.worker_id);
     }
 
     /// Wait for all active jobs to complete
@@ -316,15 +308,13 @@ impl Worker {
                 // Try to claim a job
                 match queue.claim_job(&queue_name, &worker_id).await {
                     Ok(Some(job_id)) => {
-                        // 🛑 Double-check shutdown status before acquiring permit
                         if is_shutting_down.load(Ordering::SeqCst) {
-                            // Return job to queue if we're shutting down
-                            // TODO: Add complete stalled job detection and recovery system
-                            // let _ = queue.release_job(&job_id, &queue_name).await;
+                            if let Err(e) = queue.requeue_claimed_job(&job_id, &queue_name).await {
+                                error!("Failed to requeue job on shutdown: {}", e);
+                            }
                             break;
                         }
 
-                        // Acquire semaphore permit for concurrency control
                         let permit = match semaphore.clone().acquire_owned().await {
                             Ok(permit) => permit,
                             Err(_) => {
@@ -333,15 +323,15 @@ impl Worker {
                             }
                         };
 
-                        // Spawn job execution task
                         let job_queue = Arc::clone(&queue);
                         let job_registry = Arc::clone(&registry);
                         let job_app_context = Arc::clone(&app_context);
                         let job_queue_name = queue_name.clone();
+                        let job_worker_id = worker_id.clone();
                         let job_shutdown_flag = Arc::clone(&is_shutting_down);
 
                         tokio::spawn(async move {
-                            let _permit = permit; // Keep permit alive
+                            let _permit = permit;
 
                             if let Err(e) = Self::execute_job(
                                 job_queue,
@@ -349,6 +339,7 @@ impl Worker {
                                 job_app_context,
                                 job_id,
                                 job_queue_name,
+                                job_worker_id,
                                 job_shutdown_flag,
                             )
                             .await
@@ -403,14 +394,15 @@ impl Worker {
     }
 
     async fn spawn_stalled_checker(&self) -> JoinHandle<()> {
-        let _queue = Arc::clone(&self.queue);
-        let _interval = self.config.stalled_job_check_interval;
+        let queue = Arc::clone(&self.queue);
+        let queue_name = self.config.queue_options.name.clone();
+        let max_stalled_interval = self.config.queue_options.max_stalled_interval;
+        let check_interval = self.config.stalled_job_check_interval;
         let is_shutting_down = Arc::clone(&self.is_shutting_down);
 
         tokio::spawn(async move {
-            // TODO: Implement stalled job detection and recovery
-            // This would check for jobs that have been active too long
-            // and either retry them or mark them as failed
+            let mut interval = interval(check_interval);
+
             loop {
                 // 🛑 Check shutdown status
                 if is_shutting_down.load(Ordering::SeqCst) {
@@ -418,8 +410,18 @@ impl Worker {
                     break;
                 }
 
-                // TODO: Implement stalled job detection and recovery
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                interval.tick().await;
+
+                match queue.recover_stalled_jobs(&queue_name, max_stalled_interval / 1000).await {
+                    Ok(recovered_count) => {
+                        if recovered_count > 0 {
+                            warn!("Recovered {} stalled jobs", recovered_count);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to recover stalled jobs: {}", e);
+                    }
+                }
             }
         })
     }
@@ -431,13 +433,14 @@ impl Worker {
         app_context: Arc<dyn AppContext>,
         job_id: JobId,
         queue_name: String,
+        _worker_id: String,
         is_shutting_down: Arc<AtomicBool>,
     ) -> Result<()> {
         let start_time = std::time::Instant::now();
 
-        // 🛑 Check if shutdown was initiated before job execution
         if is_shutting_down.load(Ordering::SeqCst) {
-            warn!("Job {} skipped due to shutdown", job_id);
+            warn!("Job {} requeued due to shutdown before execution", job_id);
+            queue.requeue_claimed_job(&job_id, &queue_name).await?;
             return Ok(());
         }
 

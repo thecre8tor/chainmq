@@ -1,36 +1,29 @@
 -- lua/move_delayed.lua
--- Move delayed jobs from sorted set to waiting list when their time is due
+-- Move delayed jobs from sorted set to waiting list when due.
 -- ARGV[1] = queue_name
--- ARGV[2] = current_timestamp
+-- ARGV[2] = current_timestamp (unix seconds)
+-- ARGV[3] = key_prefix (e.g. rbq)
+-- Returns comma-separated job IDs moved (empty string if none).
 
 local queue_name = ARGV[1]
 local now = tonumber(ARGV[2])
+local prefix = ARGV[3]
 
-local delayed_key = "rbq:queue:" .. queue_name .. ":delayed"
-local wait_key = "rbq:queue:" .. queue_name .. ":wait"
+local delayed_key = prefix .. ":queue:" .. queue_name .. ":delayed"
+local wait_key = prefix .. ":queue:" .. queue_name .. ":wait"
 
--- Get jobs that are due (score <= now)
 local jobs = redis.call('zrangebyscore', delayed_key, '-inf', now, 'LIMIT', 0, 100)
 
 if #jobs == 0 then
-    return 0
+    return ""
 end
 
--- Move jobs from delayed to waiting
 for i, job_id in ipairs(jobs) do
-    -- Remove from delayed sorted set
     redis.call('zrem', delayed_key, job_id)
-    
-    -- Add to waiting list (left push for FIFO)
     redis.call('lpush', wait_key, job_id)
-    
-    -- Update job state
-    local job_key = "rbq:job:" .. job_id
-    redis.call('hset', job_key, 'state', '"Waiting"')
 end
 
--- Optionally publish event for UI updates
-redis.call('publish', 'rbq:events:' .. queue_name, 
+redis.call('publish', prefix .. ':events:' .. queue_name,
     string.format('{"type":"delayed_moved","count":%d,"timestamp":%d}', #jobs, now))
 
-return #jobs
+return table.concat(jobs, ",")

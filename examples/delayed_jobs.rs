@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     let mut registry = JobRegistry::new();
     registry.register::<NotifyJob>();
 
-    let mut worker = WorkerBuilder::new_with_redis_uri("redis://localhost:6379", registry)
+    let mut worker = WorkerBuilder::new_with_redis_uri("redis://localhost:6370", registry)
         .with_app_context(app)
         .with_queue_name("default")
         .spawn()
@@ -57,6 +57,6 @@ async fn main() -> anyhow::Result<()> {
     };
     let id = queue.enqueue_with_options(job, opts).await?;
     println!("[NotifyJob] enqueued with 5s delay id={}", id);
-    
+
     Ok(())
 }

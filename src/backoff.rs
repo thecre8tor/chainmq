@@ -34,3 +34,25 @@ impl Default for BackoffStrategy {
 
 /// Convenience type alias
 pub type Backoff = BackoffStrategy;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exponential_respects_cap() {
+        let b = BackoffStrategy::Exponential { base: 2, cap: 8 };
+        assert_eq!(b.calculate_delay(1).as_secs(), 2);
+        assert_eq!(b.calculate_delay(3).as_secs(), 8);
+        assert_eq!(b.calculate_delay(10).as_secs(), 8);
+    }
+
+    #[test]
+    fn linear_increments() {
+        let b = BackoffStrategy::Linear {
+            increment: 5,
+            cap: 100,
+        };
+        assert_eq!(b.calculate_delay(2).as_secs(), 10);
+    }
+}

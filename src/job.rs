@@ -20,7 +20,7 @@ impl std::fmt::Display for JobId {
     }
 }
 
-/// Job execution priority
+/// Job execution priority (reserved for future use — not enforced by the queue yet; FIFO only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Priority {
     Low = 1,
@@ -50,10 +50,12 @@ pub enum JobState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobOptions {
     pub delay_secs: Option<u64>,
+    /// Reserved for future priority ordering; currently ignored (FIFO wait queue).
     pub priority: Priority,
     pub attempts: u32,
     pub backoff: crate::backoff::BackoffStrategy,
     pub timeout_secs: Option<u64>,
+    /// Reserved for future per-key rate limiting; currently ignored.
     pub rate_limit_key: Option<String>,
 }
 
