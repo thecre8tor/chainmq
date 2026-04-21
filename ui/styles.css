@@ -2482,22 +2482,59 @@ body {
   min-height: 100%;
 }
 
-.job-detail-col--primary > .job-detail-card--lifecycle {
+.job-detail-col--primary > .job-detail-card--response {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
-.job-detail-card--lifecycle > .job-detail-block-head {
+.job-detail-col--primary > .job-detail-card--response > .job-detail-block-head {
   flex-shrink: 0;
 }
 
-.job-detail-card--lifecycle > .job-detail-lifecycle-body {
+.job-detail-col--primary > .job-detail-card--response > .job-detail-response-body-json,
+.job-detail-col--primary > .job-detail-card--response > .job-detail-card-body {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+.job-detail-col--primary > .job-detail-card--response > .job-detail-response-placeholder-body--centered {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+
+.job-detail-col--primary > .job-detail-card--response > .job-detail-response-body-json > .job-detail-json--in-card {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.job-detail-col--primary > .job-detail-card--response > .job-detail-card-body > .job-detail-duotone {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.job-detail-col--primary > .job-detail-card--response > .job-detail-card-body .job-detail-struct-wrap,
+.job-detail-col--primary > .job-detail-card--response > .job-detail-card-body .job-detail-json-wrap {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.job-detail-col--primary > .job-detail-card--response > .job-detail-card-body .job-detail-json {
+  max-height: none;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
 }
 
 .job-detail-card {
@@ -2599,7 +2636,6 @@ body {
 }
 
 .job-detail-lifecycle-body .job-detail-te-foot--card {
-  flex: 1;
   margin-top: 0;
   min-height: 0;
   border: none;

@@ -1482,8 +1482,8 @@ function renderJobDetailPage(job) {
 
       <div class="job-detail-main-grid">
         <div class="job-detail-col job-detail-col--primary">
-          ${responseBlock}
           ${lifecycleCard}
+          ${responseBlock}
         </div>
         <div class="job-detail-col job-detail-col--secondary">
           <div class="job-detail-card job-detail-card--lift job-detail-card--execution">
