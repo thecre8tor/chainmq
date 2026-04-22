@@ -1246,12 +1246,6 @@ async function loadJobs() {
 
     const data = await response.json();
 
-    console.log(
-      `Loaded ${
-        data.jobs?.length || 0
-      } ${currentState} jobs for queue ${currentQueue}`,
-    );
-    console.log("Jobs data:", data.jobs?.slice(0, 2)); // Debug: show first 2 jobs
     allJobs = data.jobs || [];
     pruneStaleJobSelections();
     renderJobs();

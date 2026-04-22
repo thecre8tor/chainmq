@@ -3,8 +3,6 @@
 #[cfg(feature = "web-ui")]
 use crate::{JobState, Queue};
 #[cfg(feature = "web-ui")]
-use actix_files;
-#[cfg(feature = "web-ui")]
 use actix_session::config::CookieContentSecurity;
 #[cfg(feature = "web-ui")]
 use actix_session::{Session, SessionMiddleware, storage::CookieSessionStore};
@@ -12,7 +10,7 @@ use actix_session::{Session, SessionMiddleware, storage::CookieSessionStore};
 use actix_session::SessionExt;
 #[cfg(feature = "web-ui")]
 use actix_web::{
-    App, Error, HttpResponse, HttpServer, Result as ActixResult,
+    App, Error, HttpRequest, HttpResponse, HttpServer, Result as ActixResult,
     body::BoxBody,
     cookie::{Key, SameSite},
     dev::{ServiceRequest, ServiceResponse},
@@ -25,6 +23,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 #[cfg(feature = "web-ui")]
 use tokio::sync::Mutex;
+
+#[cfg(feature = "web-ui")]
+#[derive(rust_embed::RustEmbed)]
+#[folder = "ui"]
+#[exclude = "README.md"]
+struct UiAssets;
 
 /// Session payload key set after successful dashboard login.
 const SESSION_AUTH_KEY: &str = "chainmq_ui_authenticated";
@@ -456,9 +460,71 @@ async fn process_delayed(
     }
 }
 
-/// Static files (`index.html`, `app.js`, `styles.css`, `favicon.svg`, …) are served from this path
-/// relative to the process working directory. Not configurable via the public API.
-const UI_STATIC_DIR: &str = "./ui";
+/// Normalized URL prefix for the dashboard (`/` or `/dashboard`, never trailing slash except `/`).
+#[cfg(feature = "web-ui")]
+fn normalize_static_url_prefix(ui_path: &str) -> String {
+    let p = ui_path.trim();
+    if p.is_empty() || p == "/" {
+        "/".to_string()
+    } else {
+        format!("/{}", p.trim().trim_start_matches('/').trim_end_matches('/'))
+    }
+}
+
+/// Strip [`normalize_static_url_prefix`] from `full_path` and return the relative path inside `ui/`
+/// for rust-embed lookup (no leading slash, no `..`).
+#[cfg(feature = "web-ui")]
+fn embedded_asset_rel_key(full_path: &str, prefix: &str) -> Option<String> {
+    if full_path.contains("..") {
+        return None;
+    }
+    let rest = if prefix == "/" {
+        full_path.trim_start_matches('/')
+    } else if let Some(stripped) = full_path.strip_prefix(prefix) {
+        stripped.trim_start_matches('/')
+    } else {
+        return None;
+    };
+    if rest.is_empty() {
+        return Some("index.html".to_string());
+    }
+    if rest.contains('/') {
+        // Only flat files are embedded (no subdirectories).
+        return None;
+    }
+    Some(rest.to_string())
+}
+
+#[cfg(feature = "web-ui")]
+fn embedded_content_type(rel: &str) -> &'static str {
+    if rel.ends_with(".html") {
+        "text/html; charset=utf-8"
+    } else if rel.ends_with(".js") {
+        "application/javascript; charset=utf-8"
+    } else if rel.ends_with(".css") {
+        "text/css; charset=utf-8"
+    } else if rel.ends_with(".svg") {
+        "image/svg+xml"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+#[cfg(feature = "web-ui")]
+async fn serve_embedded_ui(
+    req: HttpRequest,
+    prefix: web::Data<String>,
+) -> ActixResult<HttpResponse> {
+    let Some(rel) = embedded_asset_rel_key(req.path(), prefix.get_ref()) else {
+        return Ok(HttpResponse::NotFound().finish());
+    };
+    let Some(file) = UiAssets::get(&rel) else {
+        return Ok(HttpResponse::NotFound().finish());
+    };
+    Ok(HttpResponse::Ok()
+        .content_type(embedded_content_type(&rel))
+        .body(file.data))
+}
 
 /// Reject non-browser callers (curl, scripts, other sites): the JSON under `/api` exists only
 /// for the bundled SPA. Browsers set `Sec-Fetch-Site: same-origin` (or `same-site`) on fetches
@@ -740,21 +806,20 @@ pub async fn start_web_ui(
     let cookie_secure = config.cookie_secure;
 
     let ui_path = config.ui_path.clone();
-    let ui_dir = UI_STATIC_DIR.to_string();
+    let static_url_prefix = normalize_static_url_prefix(&config.ui_path);
     let port = config.port;
     let bind_host = config.bind_host.clone();
     let bind_addr = bind_addr_for_listen(&bind_host, port);
     let origin = http_origin(&bind_host, port);
 
-    let api_path = if ui_path == "/" {
+    let api_path = if static_url_prefix == "/" {
         "/api".to_string()
     } else {
-        format!("{}/api", ui_path)
+        format!("{}/api", static_url_prefix)
     };
 
     // Clone for use in closure and println
-    let ui_path_for_closure = ui_path.clone();
-    let ui_dir_for_closure = ui_dir.clone();
+    let static_url_prefix_for_closure = static_url_prefix.clone();
     let api_path_for_closure = api_path.clone();
     let origin_for_print = origin.clone();
 
@@ -783,6 +848,7 @@ pub async fn start_web_ui(
                     .add(("Cache-Control", "no-store, max-age=0, must-revalidate")),
             )
             .app_data(web::Data::new(app_state.clone()))
+            .app_data(web::Data::new(static_url_prefix_for_closure.clone()))
             .service(
                 web::scope(&api_scope)
                     // Session must be registered last so it is the outermost layer: it loads the
@@ -814,11 +880,25 @@ pub async fn start_web_ui(
                         web::post().to(process_delayed),
                     ),
             )
-            .service(
-                actix_files::Files::new(&ui_path_for_closure, &ui_dir_for_closure)
-                    .index_file("index.html")
-                    .prefer_utf8(true),
-            )
+            .configure(|cfg| {
+                if static_url_prefix_for_closure == "/" {
+                    cfg.service(
+                        web::resource("/").route(web::get().to(serve_embedded_ui)),
+                    );
+                    cfg.service(
+                        web::resource("/{path:.*}").route(web::get().to(serve_embedded_ui)),
+                    );
+                } else {
+                    cfg.service(
+                        web::scope(static_url_prefix_for_closure.as_str())
+                            .service(web::resource("").route(web::get().to(serve_embedded_ui)))
+                            .service(web::resource("/").route(web::get().to(serve_embedded_ui)))
+                            .service(
+                                web::resource("/{path:.*}").route(web::get().to(serve_embedded_ui)),
+                            ),
+                    );
+                }
+            })
     })
     .bind(&bind_addr)?
     .run();
@@ -832,8 +912,7 @@ pub async fn start_web_ui(
         origin_for_print, ui_path
     );
     println!(
-        "[web-ui] Static files: {} (relative to process CWD — use repo root so UI edits are picked up)",
-        UI_STATIC_DIR
+        "[web-ui] Dashboard static assets are embedded in the binary (rebuild after editing files under ui/)"
     );
     if auth_enabled {
         println!(
@@ -872,6 +951,63 @@ mod web_ui_tests {
             "/dashboard/api/auth/logout"
         ));
         assert!(!is_ui_auth_public_route("GET", "/api/queues"));
+    }
+
+    #[test]
+    fn normalize_static_url_prefix_examples() {
+        assert_eq!(super::normalize_static_url_prefix("/"), "/");
+        assert_eq!(super::normalize_static_url_prefix("/dashboard/"), "/dashboard");
+        assert_eq!(super::normalize_static_url_prefix("admin"), "/admin");
+    }
+
+    #[test]
+    fn embedded_asset_rel_key_root_and_prefix() {
+        assert_eq!(
+            super::embedded_asset_rel_key("/", "/").as_deref(),
+            Some("index.html")
+        );
+        assert_eq!(
+            super::embedded_asset_rel_key("/styles.css", "/").as_deref(),
+            Some("styles.css")
+        );
+        assert_eq!(super::embedded_asset_rel_key("/api/foo", "/"), None);
+        assert_eq!(
+            super::embedded_asset_rel_key("/dashboard", "/dashboard").as_deref(),
+            Some("index.html")
+        );
+        assert_eq!(
+            super::embedded_asset_rel_key("/dashboard/app.js", "/dashboard").as_deref(),
+            Some("app.js")
+        );
+    }
+
+    #[tokio::test]
+    async fn embedded_serves_index_and_css_at_root() {
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(web::Data::new("/".to_string()))
+                .service(web::resource("/").route(web::get().to(super::serve_embedded_ui)))
+                .service(
+                    web::resource("/{path:.*}").route(web::get().to(super::serve_embedded_ui)),
+                ),
+        )
+        .await;
+
+        let req = actix_test::TestRequest::get().uri("/").to_request();
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = actix_test::read_body(resp).await;
+        let text = String::from_utf8(body.to_vec()).expect("utf8");
+        assert!(text.contains("ChainMQ Dashboard"));
+
+        let req = actix_test::TestRequest::get().uri("/styles.css").to_request();
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get(actix_web::http::header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok());
+        assert_eq!(ct, Some("text/css; charset=utf-8"));
     }
 
     fn sec_fetch_same_origin() -> (HeaderName, HeaderValue) {

@@ -15,7 +15,7 @@ The ChainMQ Web UI provides a modern, BullMQ-style dashboard for monitoring and 
 
 ## Responsive layout
 
-The UI scales from **desktop** (persistent sidebar, wide tables, multi-column job detail) to **mobile** (top chrome with menu drawer, stacked stat cards, single-column job detail and logs). Static assets live under [`ui/`](./ui/) (see [UI files](#ui-files)).
+The UI scales from **desktop** (persistent sidebar, wide tables, multi-column job detail) to **mobile** (top chrome with menu drawer, stacked stat cards, single-column job detail and logs). Source files for the dashboard live under [`ui/`](./ui/) in this repository; at **compile time** they are embedded into the `chainmq` library binary (see [UI files](#ui-files)).
 
 | Desktop — queue | Desktop — job detail |
 | :-------------: | :------------------: |
@@ -29,27 +29,31 @@ The UI scales from **desktop** (persistent sidebar, wide tables, multi-column jo
 
 ### 1. Enable the web-ui feature
 
-The `web-ui` feature is **enabled by default** on `chainmq` 0.2.0. You only need to set it explicitly when you disabled default features:
+The `web-ui` feature is **enabled by default** on current `chainmq` releases (for example **1.1.x**). You only need to set it explicitly when you disabled default features:
 
 ```toml
 [dependencies]
-chainmq = { version = "0.2.0", features = ["web-ui"], default-features = false }
+chainmq = { version = "1.1", features = ["web-ui"], default-features = false }
 ```
 
-Otherwise a plain dependency on `chainmq = "0.2.0"` is enough for `start_web_ui` / `start_web_ui_simple`.
+Otherwise a plain dependency on `chainmq = "1.1"` is enough for `start_web_ui` / `start_web_ui_simple`.
 
 ### 2. Start the UI server
 
+Redis is selected on [`QueueOptions`](https://docs.rs/chainmq/latest/chainmq/struct.QueueOptions.html) via **`redis`** ([`RedisClient`](https://docs.rs/chainmq/latest/chainmq/enum.RedisClient.html)), not a `redis_url` field. [`QueueOptions::default`](https://docs.rs/chainmq/latest/chainmq/struct.QueueOptions.html#impl-Default-for-QueueOptions) uses `RedisClient::Url("redis://127.0.0.1:6379".into())` and `key_prefix: "rbq"`; use the same `key_prefix` (and Redis target) as your workers so the dashboard sees your jobs.
+
 ```rust
-use chainmq::{Queue, QueueOptions, start_web_ui, WebUIConfig};
+use chainmq::{Queue, QueueOptions, RedisClient, start_web_ui, WebUIConfig};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Create your queue
     let queue = Queue::new(QueueOptions {
-        redis_url: "redis://localhost:6379".to_string(),
+        redis: RedisClient::Url("redis://127.0.0.1:6379".into()),
         ..Default::default()
-    }).await?;
+    })
+    .await?;
+
+    // Or, if defaults match your Redis: `Queue::new(QueueOptions::default()).await?`
 
     let ui_config = WebUIConfig {
         port: 8080,
@@ -57,12 +61,13 @@ async fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    // Start the server
     start_web_ui(queue, ui_config).await?.await?;
 
     Ok(())
 }
 ```
+
+For a runnable binary that reads **`REDIS_URL`**, see [`examples/web_ui.rs`](./examples/web_ui.rs).
 
 ### 3. Access the Dashboard
 
@@ -82,7 +87,7 @@ Optional: cap retention with **`QueueOptions::job_logs_max_lines`** (default `50
 
 ### WebUIConfig
 
-**Bind address** (`bind_host`), **port**, and **HTTP base path** (`ui_path`) are configurable. Static assets are always loaded from **`./ui`** relative to the process current working directory (see [UI files](#ui-files)).
+**Bind address** (`bind_host`), **port**, and **HTTP base path** (`ui_path`) are configurable. Static assets (`index.html`, `app.js`, `styles.css`, `favicon.svg`) are **embedded in the library binary** at compile time; consuming applications do not need a `ui/` directory on disk (see [UI files](#ui-files)).
 
 ```rust
 pub struct WebUIConfig {
@@ -178,13 +183,16 @@ let config = WebUIConfig {
 
 ## UI files
 
-The dashboard expects these files under **`./ui`** (relative to the working directory when the process starts):
+The dashboard is served from assets **compiled into** the `chainmq` crate (via [`rust-embed`](https://crates.io/crates/rust-embed) from the [`ui/`](./ui/) tree, excluding `README.md`). Files shipped in the binary include:
 
 - `index.html` — main HTML structure
 - `app.js` — frontend logic
 - `styles.css` — styling
+- `favicon.svg` — favicon
 
-Copy or symlink the [`ui/`](./ui/) directory from this repository next to your binary, or run from the project root during development. The SPA resolves its data base path from `ui_path` (paths under `{ui_path}/api/...`).
+**Developing ChainMQ:** edit files under [`ui/`](./ui/) and run `cargo build` / `cargo run` (or your IDE’s equivalent) so the embed is refreshed. **Depending on `chainmq`:** no extra filesystem layout is required; the dashboard works regardless of the process working directory.
+
+The SPA resolves its data base path from `ui_path` (paths under `{ui_path}/api/...`).
 
 ## HTTP JSON and the dashboard
 
@@ -196,7 +204,7 @@ For production use, consider:
 
 1. **Reverse Proxy**: Use nginx or similar to handle SSL/TLS
 2. **Authentication**: Set `WebUIConfig.auth` with strong credentials, `session_secret: Some([u8; 64])` from a CSPRNG, and `cookie_secure: true` when serving over HTTPS. The built-in login is for an **internal operator dashboard**, not multi-tenant identity.
-3. **Static assets**: Ensure a `./ui` directory (with the three files above) exists relative to the process working directory—e.g. copy or symlink the `ui` folder beside your binary and set the service `WorkingDirectory` accordingly
+3. **Static assets**: Dashboard assets ship inside the `chainmq` binary; to customize the UI in a fork or local build, change files under `ui/` and rebuild your application so the dependency is recompiled.
 
 Example with environment variables for **port** and **path** only:
 
@@ -214,8 +222,8 @@ let config = WebUIConfig {
 
 ### UI not loading
 
-- Ensure `./ui` exists from the process working directory and contains `index.html`, `app.js`, and `styles.css`
-- Check browser console for errors
+- Confirm you rebuilt after upgrading or patching `chainmq` (embedded assets come from the compiled crate version).
+- Check the browser console for errors (e.g. blocked scripts or mixed content).
 
 ### Dashboard data not loading
 
