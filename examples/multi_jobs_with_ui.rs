@@ -2,7 +2,7 @@
 // Example showing how to integrate UI with multiple job types
 
 use chainmq::{
-    Job, JobContext, JobOptions, Priority, Queue, QueueOptions, Result, async_trait,
+    Job, JobContext, JobOptions, Priority, Queue, QueueOptions, RedisClient, Result, async_trait,
     start_web_ui_simple,
 };
 use serde::{Deserialize, Serialize};
@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
 
     let redis_url = "redis://localhost:6370".to_string();
     let queue = Queue::new(QueueOptions {
-        redis_url: redis_url.clone(),
+        redis: RedisClient::Url(redis_url.clone()),
         ..Default::default()
     })
     .await?;
@@ -135,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
     // Start the web UI - it automatically discovers ALL queues from Redis!
     // You only need ONE call, regardless of how many job types/queues you have
     let ui_queue = Queue::new(QueueOptions {
-        redis_url: redis_url.clone(),
+        redis: RedisClient::Url(redis_url),
         ..Default::default()
     })
     .await?;

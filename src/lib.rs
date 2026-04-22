@@ -11,6 +11,7 @@ pub mod job;
 pub mod job_log_layer;
 pub mod lua;
 pub mod queue;
+pub mod redis;
 pub mod registry;
 pub mod worker;
 
@@ -24,6 +25,7 @@ pub use job::JobMetadata;
 pub use job::{Job, JobId, JobLogLine, JobOptions, JobState, Priority};
 pub use job_log_layer::{JobLogLayer, job_logs_layer};
 pub use queue::{Queue, QueueOptions};
+pub use redis::RedisClient;
 pub use registry::JobRegistry;
 pub use worker::{Worker, WorkerBuilder};
 

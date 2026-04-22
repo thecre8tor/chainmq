@@ -87,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let client = Client::open(redis_url)?;
-    let mut worker = WorkerBuilder::new_with_redis_instance(client, registry)
+    let mut worker = WorkerBuilder::new_with_redis_instance(&client, registry)
         .with_app_context(app_state)
         .with_concurrency(concurrency)
         .with_queue_name(EmailJob::queue_name())

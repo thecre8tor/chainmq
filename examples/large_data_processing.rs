@@ -7,7 +7,7 @@ use std::{collections::HashMap, sync::Arc};
 use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Debug)]
-struct CustomerRecord {
+pub struct CustomerRecord {
     id: String,
     name: String,
     email: String,
@@ -125,8 +125,8 @@ impl DatasetStore {
 
 // Updated job implementation that uses real data
 use chainmq::{
-    AppContext, Job, JobContext, JobOptions, JobRegistry, Priority, Queue, QueueOptions, Result,
-    WorkerBuilder, async_trait,
+    AppContext, Job, JobContext, JobOptions, JobRegistry, Priority, Queue, QueueOptions,
+    RedisClient, Result, WorkerBuilder, async_trait,
 };
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -297,7 +297,7 @@ async fn main() -> anyhow::Result<()> {
     // STEP 2
     println!("[enqueue] Preparing QueueOptions and connecting to Redis...");
     let options = QueueOptions {
-        redis_instance: Some(client.clone()),
+        redis: RedisClient::Client(client.clone()),
         ..Default::default()
     };
     let queue = Queue::new(options).await?;
@@ -333,7 +333,7 @@ async fn main() -> anyhow::Result<()> {
     let mut registry = JobRegistry::new();
     registry.register::<RealDataProcessingJob>();
 
-    let mut worker = WorkerBuilder::new_with_redis_instance(client, registry)
+    let mut worker = WorkerBuilder::new_with_redis_instance(&client, registry)
         .with_app_context(app_state)
         .with_concurrency(concurrency)
         .with_queue_name(RealDataProcessingJob::queue_name())

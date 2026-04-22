@@ -112,12 +112,12 @@ impl AppContext for AppState {
 ```rust
 use chainmq::{JobRegistry, WorkerBuilder};
 use actix_web::{web::Data, App, HttpServer};
-use redis::Client as RedisClient;
+use redis::Client;
 use tokio::sync::broadcast;
 
 async fn setup_application() -> Result<(), anyhow::Error> {
     // Initialize Redis connection
-    let redis_client = RedisClient::open("redis://127.0.0.1/")?;
+    let redis_client = Client::open("redis://127.0.0.1/")?;
 
     // Create application state
     let app_state = Arc::new(AppState {
@@ -131,9 +131,13 @@ async fn setup_application() -> Result<(), anyhow::Error> {
 
 
     // Start background workers
+    let app_state_for_worker = app_state.clone();
     tokio::spawn(async move {
-        let mut worker = WorkerBuilder::new_with_redis_instance(redis_client.clone(), registry)
-            .with_app_context(app_state.clone())
+        let mut worker = WorkerBuilder::new_with_redis_instance(
+            app_state_for_worker.redis_client.as_ref(),
+            registry,
+        )
+            .with_app_context(app_state_for_worker.clone())
             .with_queue_name(EmailJob::queue_name())
             .spawn()
             .await
@@ -159,7 +163,7 @@ async fn setup_application() -> Result<(), anyhow::Error> {
 ### 4. Enqueue Jobs from Anywhere
 
 ```rust
-use chainmq::{Queue, QueueOptions};
+use chainmq::{Queue, QueueOptions, RedisClient};
 
 async fn enqueue_email_job(app_state: &AppState) -> chainmq::Result<()> {
     let email_job = EmailJob {
@@ -169,7 +173,7 @@ async fn enqueue_email_job(app_state: &AppState) -> chainmq::Result<()> {
     };
 
     let options = QueueOptions {
-        redis_instance: Some(app_state.redis_client.clone()),
+        redis: RedisClient::Client(app_state.redis_client.as_ref().clone()),
         ..Default::default()
     };
 
@@ -231,7 +235,7 @@ cargo run --example web_ui
 **Notes:**
 
 - You can enqueue before or after workers start. Jobs persist in Redis until claimed.
-- Workers must use `.with_queue_name()` that matches the jobs they should claim; use the **same Redis URL and `key_prefix`** as producers and the web UI so everyone sees the same data.
+- Workers must use `.with_queue_name()` that matches the jobs they should claim; use the **same Redis endpoint (or equivalent `RedisClient` setting) and `key_prefix`** as producers and the web UI so everyone sees the same data.
 - Some examples use non-default Redis URLs or ports (for example `6370`). Check the top of each example and adjust for your environment.
 
 ## Core Concepts
@@ -248,24 +252,45 @@ cargo run --example web_ui
 
 ### Redis Configuration
 
-ChainMQ works with any Redis instance:
+ChainMQ targets the **`redis` 1.x** crate and uses [`redis::aio::ConnectionManager`](https://docs.rs/redis/latest/redis/aio/struct.ConnectionManager.html) internally for queues (automatic reconnect with bounded connect and response timeouts when built from a URL or `redis::Client`).
+
+You describe how to reach Redis on `QueueOptions` via the `RedisClient` enum (exported at the crate root as `chainmq::RedisClient`):
+
+- **`RedisClient::Url(String)`** — open a client and build a connection manager from the URL (default in `QueueOptions::default`).
+- **`RedisClient::Client(redis::Client)`** — share an existing synchronous client (for example the same one you keep in application state).
+- **`RedisClient::Manager(ConnectionManager)`** — reuse an already-built manager (for example one you created for custom tuning, or to share one manager across several components).
 
 ```rust
-// Local Redis
+use chainmq::{QueueOptions, RedisClient};
+
+// URL only (typical for scripts and examples)
+let _ = QueueOptions {
+    redis: RedisClient::Url("redis://127.0.0.1:6379".into()),
+    ..Default::default()
+};
+
+// Existing redis::Client
 let redis_client = redis::Client::open("redis://127.0.0.1:6379/")?;
+let _ = QueueOptions {
+    redis: RedisClient::Client(redis_client.clone()),
+    ..Default::default()
+};
 
-// Redis with authentication
-let redis_client = redis::Client::open("redis://:password@127.0.0.1:6379/")?;
-
-// Redis with database selection
-let redis_client = redis::Client::open("redis://127.0.0.1:6379/1")?;
+// With authentication or DB index in the URL
+let _ = QueueOptions {
+    redis: RedisClient::Url("redis://:password@127.0.0.1:6379/0".into()),
+    ..Default::default()
+};
 ```
 
 ### Worker Configuration
 
 ```rust
-// Using Redis instance
-let worker = WorkerBuilder::new_with_redis_instance(redis_client, registry)
+use chainmq::WorkerBuilder;
+use redis::aio::ConnectionManager;
+
+// Using an existing redis::Client (takes a reference; clones internally for options)
+let worker = WorkerBuilder::new_with_redis_instance(&redis_client, registry)
     .with_app_context(app_state)
     .with_queue_name("priority_queue")
     .with_concurrency(10)                           // Number of concurrent jobs
@@ -273,11 +298,17 @@ let worker = WorkerBuilder::new_with_redis_instance(redis_client, registry)
     .spawn()
     .await?;
 
-// Using Redis URI
+// Using Redis URI (stored as RedisClient::Url on the worker's QueueOptions)
 let worker = WorkerBuilder::new_with_redis_uri("redis://127.0.0.1:6379/", registry)
     .with_app_context(app_state)
     .with_queue_name("background_tasks")
     .with_concurrency(5)
+    .spawn()
+    .await?;
+
+// Optional: reuse a ConnectionManager you built yourself
+let worker = WorkerBuilder::new_with_redis_manager(manager, registry)
+    .with_queue_name("shared_manager_queue")
     .spawn()
     .await?;
 ```
@@ -285,10 +316,11 @@ let worker = WorkerBuilder::new_with_redis_uri("redis://127.0.0.1:6379/", regist
 ### Queue Configuration
 
 ```rust
+use chainmq::{Queue, QueueOptions, RedisClient};
+
 let options = QueueOptions {
     name: "default".to_string(),
-    redis_url: "redis://127.0.0.1:6379".to_string(),
-    redis_instance: None,
+    redis: RedisClient::Url("redis://127.0.0.1:6379".into()),
     key_prefix: "rbq".to_string(),
     default_concurrency: 10,
     max_stalled_interval: 30000, // 30 seconds
@@ -388,7 +420,7 @@ registry.register::<ReportGenerationJob>();
 registry.register::<CleanupJob>();
 
 // Single worker can handle all job types
-let worker = WorkerBuilder::new_with_redis_instance(redis_client, registry)
+let worker = WorkerBuilder::new_with_redis_instance(&redis_client, registry)
     .with_queue_name("mixed_jobs")
     .spawn()
     .await?;
@@ -440,6 +472,8 @@ impl Job for RiskyJob {
 
 ## Internals (high level)
 
+Each `Queue` holds a clone-friendly Redis async [`ConnectionManager`](https://docs.rs/redis/latest/redis/aio/struct.ConnectionManager.html) (built from your `RedisClient` choice) for commands and script evaluation.
+
 ChainMQ uses Lua scripts to ensure atomic operations:
 
 - **`move_delayed.lua`**: Moves due jobs from delayed sorted set to wait list
@@ -461,7 +495,7 @@ Redis keys use a configurable prefix (default `rbq`):
 **Jobs not being processed:**
 
 - Ensure worker `.with_queue_name()` matches `Job::queue_name()`
-- Verify same Redis URL for both worker and enqueuer
+- Verify the same Redis endpoint and `RedisClient` mode (URL vs shared client vs manager) for both worker and enqueuer, not only the host string
 - Check jobs are enqueued: `redis-cli LRANGE rbq:queue:{queue}:wait 0 -1`
 
 **Connection issues:**

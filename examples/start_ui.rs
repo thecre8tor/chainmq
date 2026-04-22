@@ -1,7 +1,7 @@
 // examples/start_ui.rs
 // Example showing how to start the web UI automatically with a custom path
 
-use chainmq::{Queue, QueueOptions, WebUIConfig, start_web_ui};
+use chainmq::{Queue, QueueOptions, RedisClient, WebUIConfig, start_web_ui};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -10,7 +10,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create queue with your Redis connection
     let options = QueueOptions {
-        redis_url: "redis://127.0.0.1:6370".to_string(),
+        redis: RedisClient::Url("redis://127.0.0.1:6370".into()),
         ..Default::default()
     };
     let queue = Queue::new(options).await?;

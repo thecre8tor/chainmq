@@ -1,3 +1,4 @@
+use chainmq::RedisClient;
 use chainmq::{
     Job, JobContext, JobOptions, Priority, Queue, QueueOptions, Result, async_trait,
     serde_json::json, start_web_ui_simple,
@@ -40,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
     println!("[enqueue] Preparing QueueOptions and connecting to Redis...");
     let redis_url = "redis://localhost:6370".to_string();
     let options = QueueOptions {
-        redis_url: redis_url.clone(),
+        redis: RedisClient::Url(redis_url.clone()),
         ..Default::default()
     };
     let queue = Queue::new(options).await?;
@@ -93,7 +94,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Start the web UI - it blocks until Ctrl+C, keeping the process alive
     let ui_queue = Queue::new(QueueOptions {
-        redis_url: redis_url.clone(),
+        redis: RedisClient::Url(redis_url),
         ..Default::default()
     })
     .await?;

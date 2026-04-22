@@ -7,7 +7,8 @@
 //! With Redis at `REDIS_URL` or default `redis://127.0.0.1:6379`.
 use async_trait::async_trait;
 use chainmq::{
-    Job, JobContext, JobLogLine, JobMetadata, JobOptions, JobState, Queue, QueueOptions, Result,
+    Job, JobContext, JobLogLine, JobMetadata, JobOptions, JobState, Queue, QueueOptions,
+    RedisClient, Result,
 };
 use serde::{Deserialize, Serialize};
 
@@ -33,8 +34,9 @@ impl Job for TestJob {
 
 fn opts() -> QueueOptions {
     QueueOptions {
-        redis_url: std::env::var("REDIS_URL")
-            .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
+        redis: RedisClient::Url(
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6370".into()),
+        ),
         key_prefix: format!("cmq_{}", uuid::Uuid::new_v4().as_simple()),
         ..Default::default()
     }

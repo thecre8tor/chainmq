@@ -1,8 +1,9 @@
 // src/worker.rs
 use crate::{
     AppContext, ChainMQError, JobContext, JobId, JobRegistry, Queue, QueueOptions, Result,
+    redis::RedisClient,
 };
-use redis::Client;
+use redis::{Client, aio::ConnectionManager};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -51,7 +52,7 @@ pub struct WorkerBuilder {
 impl WorkerBuilder {
     pub fn new_with_redis_uri(redis_url: impl Into<String>, registry: JobRegistry) -> Self {
         let mut config = WorkerConfig::default();
-        config.queue_options.redis_url = redis_url.into();
+        config.queue_options.redis = RedisClient::Url(redis_url.into());
 
         Self {
             config,
@@ -61,9 +62,21 @@ impl WorkerBuilder {
         }
     }
 
-    pub fn new_with_redis_instance(redis_client: Client, registry: JobRegistry) -> Self {
+    pub fn new_with_redis_instance(redis_client: &Client, registry: JobRegistry) -> Self {
         let mut config = WorkerConfig::default();
-        config.queue_options.redis_instance = Some(redis_client);
+        config.queue_options.redis = RedisClient::Client(redis_client.clone());
+
+        Self {
+            config,
+            registry,
+            app_context: None,
+            shared_queue: None,
+        }
+    }
+
+    pub fn new_with_redis_manager(manager: ConnectionManager, registry: JobRegistry) -> Self {
+        let mut config = WorkerConfig::default();
+        config.queue_options.redis = RedisClient::Manager(manager);
 
         Self {
             config,
@@ -140,9 +153,7 @@ impl Worker {
             Some(q) => q,
             None => Arc::new(Queue::new(config.queue_options.clone()).await?),
         };
-        crate::job_log_layer::install_default_subscriber_with_job_logs_if_unset(Arc::clone(
-            &queue,
-        ));
+        crate::job_log_layer::install_default_subscriber_with_job_logs_if_unset(Arc::clone(&queue));
         let semaphore = Arc::new(Semaphore::new(config.concurrency));
         let (shutdown_tx, _) = broadcast::channel(1);
         let is_shutting_down = Arc::new(AtomicBool::new(false));

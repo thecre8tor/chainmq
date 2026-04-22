@@ -17,7 +17,7 @@
 //! - `REDIS_URL` — Redis connection (default `redis://127.0.0.1:6370` to match other examples)
 //! - Optional: set `auth: None` on [`WebUIConfig`] if you want no login (not recommended for exposed hosts).
 
-use chainmq::{Queue, QueueOptions, WebUIConfig, start_web_ui};
+use chainmq::{Queue, QueueOptions, RedisClient, WebUIConfig, start_web_ui};
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -29,7 +29,7 @@ async fn main() -> std::io::Result<()> {
     println!("Connecting to Redis at: {}", redis_url);
 
     let queue = Queue::new(QueueOptions {
-        redis_url,
+        redis: RedisClient::Url(redis_url),
         ..Default::default()
     })
     .await

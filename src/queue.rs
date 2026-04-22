@@ -1,21 +1,22 @@
+use crate::redis::RedisClient;
 // src/queue.rs
 use crate::{
     ChainMQError, Job, JobId, JobLogLine, JobMetadata, JobOptions, JobState, Result,
     lua::LuaScripts,
 };
 use chrono::Utc;
-use redis::aio::MultiplexedConnection;
-use redis::{AsyncCommands, Client as RedisClient};
+use redis::AsyncCommands;
 use serde_json;
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use redis::aio::ConnectionManager;
 
 /// Options for queue configuration
 #[derive(Debug, Clone)]
 pub struct QueueOptions {
     pub name: String,
-    pub redis_url: String,
-    pub redis_instance: Option<RedisClient>,
+    pub redis: RedisClient,
     pub key_prefix: String,
     pub default_concurrency: usize,
     pub max_stalled_interval: u64,
@@ -27,8 +28,7 @@ impl Default for QueueOptions {
     fn default() -> Self {
         Self {
             name: "default".to_string(),
-            redis_url: "redis://127.0.0.1:6379".to_string(),
-            redis_instance: None,
+            redis: RedisClient::Url("redis://127.0.0.1:6379".into()),
             key_prefix: "rbq".to_string(),
             default_concurrency: 10,
             max_stalled_interval: 30000, // 30 seconds
@@ -41,22 +41,20 @@ impl Default for QueueOptions {
 pub struct Queue {
     options: QueueOptions,
     scripts: LuaScripts,
-    async_conn: MultiplexedConnection,
+    async_conn: ConnectionManager,
 }
 
 impl Queue {
     pub async fn new(options: QueueOptions) -> Result<Self> {
-        let client = match options.clone().redis_instance {
-            Some(client) => client,
-            None => RedisClient::open(options.redis_url.as_str())?,
+        let async_conn = match &options.redis {
+            RedisClient::Manager(manager) => manager.clone(),
+            RedisClient::Url(url) => RedisClient::build_connection_manager_from_url(url).await?,
+            RedisClient::Client(client) => {
+                RedisClient::build_connection_manager_from_client(client.clone()).await?
+            }
         };
 
-        let scripts = LuaScripts::new(&client).await?;
-
-        let async_conn = client
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(ChainMQError::Redis)?;
+        let scripts = LuaScripts::new();
 
         Ok(Self {
             options,
