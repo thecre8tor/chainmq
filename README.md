@@ -21,12 +21,12 @@ This crate is library-first. Runnable examples demonstrate typical patterns (sin
 
 The dashboard adapts from wide layouts (sidebar + dense tables) to narrow viewports (mobile chrome, off-canvas queue menu, stacked controls and cards). Setup and options are in [README_UI.md](./README_UI.md).
 
-| Desktop — queue | Desktop — job detail |
-| :-------------: | :------------------: |
+|                                        Desktop — queue                                         |                                      Desktop — job detail                                       |
+| :--------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------: |
 | ![ChainMQ dashboard: queue and jobs on a wide screen](docs/images/dashboard/desktop-queue.png) | ![ChainMQ dashboard: job detail on a wide screen](docs/images/dashboard/desktop-job-detail.png) |
 
-| Mobile — queue | Mobile — job detail |
-| :------------: | :-----------------: |
+|                                       Mobile — queue                                        |                                       Mobile — job detail                                        |
+| :-----------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------: |
 | ![ChainMQ dashboard: queue view on a narrow screen](docs/images/dashboard/mobile-queue.png) | ![ChainMQ dashboard: job detail on a narrow screen](docs/images/dashboard/mobile-job-detail.png) |
 
 ## Quick Start
@@ -35,7 +35,7 @@ Add ChainMQ to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-chainmq = "1.1.0"
+chainmq = "1.1.2"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 async-trait = "0.1"

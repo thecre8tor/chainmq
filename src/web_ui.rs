@@ -14,6 +14,7 @@ use actix_web::{
     body::BoxBody,
     cookie::{Key, SameSite},
     dev::{ServiceRequest, ServiceResponse},
+    http::header::LOCATION,
     middleware::{DefaultHeaders, Next, from_fn},
     web,
 };
@@ -515,7 +516,24 @@ async fn serve_embedded_ui(
     req: HttpRequest,
     prefix: web::Data<String>,
 ) -> ActixResult<HttpResponse> {
-    let Some(rel) = embedded_asset_rel_key(req.path(), prefix.get_ref()) else {
+    let prefix_str = prefix.get_ref().as_str();
+    // Without a trailing slash, relative asset URLs in index.html (e.g. `styles.css`) resolve
+    // against the parent path (`/styles.css` instead of `/queues/styles.css`). Redirect the
+    // bare prefix to `{prefix}/` so CSS, JS, and favicon load correctly.
+    if prefix_str != "/" {
+        let canonical_prefix = prefix_str.trim_end_matches('/');
+        if req.path() == canonical_prefix {
+            let mut loc = format!("{}/", canonical_prefix);
+            if let Some(q) = req.uri().query() {
+                loc.push('?');
+                loc.push_str(q);
+            }
+            return Ok(HttpResponse::Found()
+                .insert_header((LOCATION, loc))
+                .finish());
+        }
+    }
+    let Some(rel) = embedded_asset_rel_key(req.path(), prefix_str) else {
         return Ok(HttpResponse::NotFound().finish());
     };
     let Some(file) = UiAssets::get(&rel) else {
@@ -758,6 +776,11 @@ pub async fn start_web_ui_simple(queue: Queue) -> std::io::Result<()> {
 
 /// Start the web UI server
 ///
+/// The returned [`actix_web::dev::Server`] is a future: you must **await it** (e.g.
+/// `start_web_ui(...).await?.await?`) so the HTTP server actually runs. If you only
+/// `await` the outer [`Result`] and drop the `Server`, nothing listens on the port.
+/// Inside `tokio::spawn`, use an inner `async` block that awaits that second future.
+///
 /// # Example
 /// ```no_run
 /// use chainmq::{Queue, QueueOptions, start_web_ui, WebUIConfig};
@@ -928,7 +951,7 @@ pub async fn start_web_ui(
 mod web_ui_tests {
     use super::*;
     use actix_web::body::MessageBody;
-    use actix_web::http::header::{HeaderName, HeaderValue, SET_COOKIE};
+    use actix_web::http::header::{HeaderName, HeaderValue, LOCATION, SET_COOKIE};
     use actix_web::http::StatusCode;
     use actix_web::test as actix_test;
     use actix_web::App;
@@ -1008,6 +1031,38 @@ mod web_ui_tests {
             .get(actix_web::http::header::CONTENT_TYPE)
             .and_then(|h| h.to_str().ok());
         assert_eq!(ct, Some("text/css; charset=utf-8"));
+    }
+
+    #[tokio::test]
+    async fn embedded_prefix_redirects_no_trailing_slash() {
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(web::Data::new("/dashboard".to_string()))
+                .service(
+                    web::scope("/dashboard")
+                        .service(web::resource("").route(web::get().to(super::serve_embedded_ui)))
+                        .service(
+                            web::resource("/").route(web::get().to(super::serve_embedded_ui)),
+                        )
+                        .service(
+                            web::resource("/{path:.*}")
+                                .route(web::get().to(super::serve_embedded_ui)),
+                        ),
+                ),
+        )
+        .await;
+
+        let req = actix_test::TestRequest::get().uri("/dashboard").to_request();
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let loc = resp.headers().get(LOCATION).and_then(|h| h.to_str().ok());
+        assert_eq!(loc, Some("/dashboard/"));
+
+        let req = actix_test::TestRequest::get().uri("/dashboard?x=1").to_request();
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let loc = resp.headers().get(LOCATION).and_then(|h| h.to_str().ok());
+        assert_eq!(loc, Some("/dashboard/?x=1"));
     }
 
     fn sec_fetch_same_origin() -> (HeaderName, HeaderValue) {

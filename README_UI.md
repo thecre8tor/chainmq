@@ -17,12 +17,12 @@ The ChainMQ Web UI provides a modern, BullMQ-style dashboard for monitoring and 
 
 The UI scales from **desktop** (persistent sidebar, wide tables, multi-column job detail) to **mobile** (top chrome with menu drawer, stacked stat cards, single-column job detail and logs). Source files for the dashboard live under [`ui/`](./ui/) in this repository; at **compile time** they are embedded into the `chainmq` library binary (see [UI files](#ui-files)).
 
-| Desktop — queue | Desktop — job detail |
-| :-------------: | :------------------: |
+|                                        Desktop — queue                                         |                                      Desktop — job detail                                       |
+| :--------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------: |
 | ![ChainMQ dashboard: queue and jobs on a wide screen](docs/images/dashboard/desktop-queue.png) | ![ChainMQ dashboard: job detail on a wide screen](docs/images/dashboard/desktop-job-detail.png) |
 
-| Mobile — queue | Mobile — job detail |
-| :------------: | :-----------------: |
+|                                       Mobile — queue                                        |                                       Mobile — job detail                                        |
+| :-----------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------: |
 | ![ChainMQ dashboard: queue view on a narrow screen](docs/images/dashboard/mobile-queue.png) | ![ChainMQ dashboard: job detail on a narrow screen](docs/images/dashboard/mobile-job-detail.png) |
 
 ## Quick Start
@@ -33,7 +33,7 @@ The `web-ui` feature is **enabled by default** on current `chainmq` releases (fo
 
 ```toml
 [dependencies]
-chainmq = { version = "1.1", features = ["web-ui"], default-features = false }
+chainmq = { version = "1.1.2", features = ["web-ui"], default-features = false }
 ```
 
 Otherwise a plain dependency on `chainmq = "1.1"` is enough for `start_web_ui` / `start_web_ui_simple`.
