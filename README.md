@@ -35,13 +35,13 @@ Add ChainMQ to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-chainmq = "0.2.0"
+chainmq = "1.1.0"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 async-trait = "0.1"
 ```
 
-The crate enables the **`web-ui`** feature by default (optional Actix server and static dashboard). For a smaller dependency tree when you only need the library, use `chainmq = { version = "0.2.0", default-features = false }` and add `features = ["web-ui"]` when you want the built-in UI helpers (`start_web_ui`, etc.). See [README_UI.md](./README_UI.md) for setup, log capture, and `WebUIConfig`.
+The crate enables the **`web-ui`** feature by default (optional Actix server and static dashboard). For a smaller dependency tree when you only need the library, use `chainmq = { version = "1.1.0", default-features = false }` and add `features = ["web-ui"]` when you want the built-in UI helpers (`start_web_ui`, etc.). See [README_UI.md](./README_UI.md) for setup, log capture, and `WebUIConfig`.
 
 ## Basic Usage:
 
