@@ -1,9 +1,12 @@
 // examples/multi_jobs_with_ui.rs
 // Example showing how to integrate UI with multiple job types
 
+use std::net::SocketAddr;
+
+use axum::Router;
 use chainmq::{
-    Job, JobContext, JobOptions, Priority, Queue, QueueOptions, RedisClient, Result, async_trait,
-    start_web_ui_simple,
+    Job, JobContext, JobOptions, Priority, Queue, QueueOptions, RedisClient, Result,
+    WebUIMountConfig, async_trait, chainmq_dashboard_router,
 };
 use serde::{Deserialize, Serialize};
 
@@ -132,14 +135,16 @@ async fn main() -> anyhow::Result<()> {
     println!("\n[multi-jobs] All jobs enqueued!");
     println!("[multi-jobs] The UI will automatically discover and display all queues");
 
-    // Start the web UI - it automatically discovers ALL queues from Redis!
-    // You only need ONE call, regardless of how many job types/queues you have
-    let ui_queue = Queue::new(QueueOptions {
-        redis: RedisClient::Url(redis_url),
+    let mount = WebUIMountConfig {
+        ui_path: "/dashboard".to_string(),
         ..Default::default()
-    })
-    .await?;
-    start_web_ui_simple(ui_queue).await?;
+    };
+    let dashboard = chainmq_dashboard_router(queue, mount)?;
+    let app = Router::new().nest_service("/dashboard", dashboard);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 8085));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    println!("[multi-jobs] Dashboard at http://127.0.0.1:8085/dashboard/");
+    axum::serve(listener, app).await?;
 
     Ok(())
 }

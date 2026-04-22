@@ -35,13 +35,13 @@ Add ChainMQ to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-chainmq = "1.1.2"
+chainmq = "1.2.0"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 async-trait = "0.1"
 ```
 
-The crate enables the **`web-ui`** feature by default (optional Actix server and static dashboard). For a smaller dependency tree when you only need the library, use `chainmq = { version = "1.1.0", default-features = false }` and add `features = ["web-ui"]` when you want the built-in UI helpers (`start_web_ui`, etc.). See [README_UI.md](./README_UI.md) for setup, log capture, and `WebUIConfig`.
+The crate enables the **`web-ui`** feature by default (Axum dashboard router you nest on your server). For a smaller dependency tree, use `chainmq = { version = "1.1.2", default-features = false }`. Add `features = ["web-ui"]` or `["web-ui-axum"]` / `["web-ui-actix"]` when you want the dashboard. See [README_UI.md](./README_UI.md) for setup, log capture, and [`WebUIMountConfig`](./README_UI.md#webuimountconfig).
 
 ## Basic Usage:
 
@@ -107,54 +107,65 @@ impl AppContext for AppState {
 }
 ```
 
-### 3. Configure Workers and Your Preferred Web Server
+### 3. Configure workers and mount the dashboard (Axum)
 
 ```rust
-use chainmq::{JobRegistry, WorkerBuilder};
-use actix_web::{web::Data, App, HttpServer};
+use std::{net::SocketAddr, sync::Arc};
+
+use axum::Router;
+use chainmq::{
+    chainmq_dashboard_router, JobRegistry, Queue, QueueOptions, RedisClient, WebUIMountConfig,
+    WorkerBuilder,
+};
 use redis::Client;
-use tokio::sync::broadcast;
 
 async fn setup_application() -> Result<(), anyhow::Error> {
-    // Initialize Redis connection
     let redis_client = Client::open("redis://127.0.0.1/")?;
 
-    // Create application state
     let app_state = Arc::new(AppState {
         mail_client: Arc::new(MailClient::new()),
         redis_client: Arc::new(redis_client.clone()),
     });
 
-    // Set up job registry
     let mut registry = JobRegistry::new();
     registry.register::<EmailJob>();
 
-
-    // Start background workers
     let app_state_for_worker = app_state.clone();
     tokio::spawn(async move {
         let mut worker = WorkerBuilder::new_with_redis_instance(
             app_state_for_worker.redis_client.as_ref(),
             registry,
         )
-            .with_app_context(app_state_for_worker.clone())
-            .with_queue_name(EmailJob::queue_name())
-            .spawn()
-            .await
-            .expect("Failed to initialize workers");
+        .with_app_context(app_state_for_worker.clone())
+        .with_queue_name(EmailJob::queue_name())
+        .spawn()
+        .await
+        .expect("Failed to initialize workers");
 
         let _ = worker.start().await;
     });
 
-    // Start web server
-    HttpServer::new(move || {
-        App::new()
-            .app_data(Data::new(app_state.clone()))
-            .service(your_routes)
+    let queue = Queue::new(QueueOptions {
+        redis: RedisClient::Client(redis_client),
+        ..Default::default()
     })
-    .bind("127.0.0.1:8000")?
-    .run()
     .await?;
+
+    let dashboard = chainmq_dashboard_router(
+        queue,
+        WebUIMountConfig {
+            ui_path: "/queues".to_string(),
+            ..Default::default()
+        },
+    )?;
+
+    let app = Router::new()
+        .nest("/queues", dashboard)
+        .route("/api/health", axum::routing::get(|| async { "ok" }));
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 8000));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
 
     Ok(())
 }
@@ -221,14 +232,14 @@ cargo run --example failure_retry
 # Delayed jobs
 cargo run --example delayed_jobs
 
-# Built-in dashboard (`start_web_ui` / `start_web_ui_simple`) — see README_UI.md
+# Axum host + nested dashboard — see README_UI.md
 cargo run --example start_ui
-# Then open http://127.0.0.1:8080/dashboard (path matches WebUIConfig in the example)
+# Then open http://127.0.0.1:8080/dashboard/ (see example source for path and port)
 
 # Larger enqueue/processing demo (data volume / stress-style usage)
 cargo run --example large_data_processing
 
-# Reference: hand-rolled Actix routes mirroring the dashboard API (for custom servers)
+# Minimal Axum binary + dashboard (`REDIS_URL` optional)
 cargo run --example web_ui
 ```
 
@@ -246,7 +257,7 @@ cargo run --example web_ui
 - **Registry**: Maps job type names to executors for deserialization and dispatch
 - **JobContext**: Provides access to application state and job metadata during execution
 
-**Web UI:** Start it once (for example `start_web_ui` with one `Queue`). That process discovers **all** logical queue names for the same Redis + `key_prefix`. It does not merge different prefixes or Redis URLs; use one `Queue` configuration that matches your workers and enqueuers. Details: [README_UI.md](./README_UI.md).
+**Web UI:** Mount [`chainmq_dashboard_router`](https://docs.rs/chainmq/latest/chainmq/fn.chainmq_dashboard_router.html) (or the Actix [`configure_chainmq_web_ui`](https://docs.rs/chainmq/latest/chainmq/fn.configure_chainmq_web_ui.html) helper) with **one** [`Queue`](https://docs.rs/chainmq/latest/chainmq/struct.Queue.html) for the same Redis + `key_prefix` as workers; it discovers **all** logical queue names in that namespace. Details: [README_UI.md](./README_UI.md).
 
 ## Configuration
 

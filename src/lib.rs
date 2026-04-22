@@ -15,7 +15,7 @@ pub mod redis;
 pub mod registry;
 pub mod worker;
 
-#[cfg(feature = "web-ui")]
+#[cfg(any(feature = "web-ui-axum", feature = "web-ui-actix"))]
 pub mod web_ui;
 
 pub use backoff::{Backoff, BackoffStrategy};
@@ -29,14 +29,14 @@ pub use redis::RedisClient;
 pub use registry::JobRegistry;
 pub use worker::{Worker, WorkerBuilder};
 
-#[cfg(feature = "web-ui")]
-pub use web_ui::{WebUIAuth, WebUIConfig, start_web_ui, start_web_ui_simple};
+#[cfg(any(feature = "web-ui-axum", feature = "web-ui-actix"))]
+pub use web_ui::{WebUIAuth, WebUIMountConfig};
 
-// Provide a no-op version when web-ui feature is disabled
-#[cfg(not(feature = "web-ui"))]
-pub async fn start_web_ui_simple(_queue: Queue) -> std::io::Result<()> {
-    Ok(())
-}
+#[cfg(feature = "web-ui-axum")]
+pub use web_ui::{WebUiState, chainmq_dashboard_router};
+
+#[cfg(feature = "web-ui-actix")]
+pub use web_ui::configure_chainmq_web_ui;
 
 // Re-export commonly used types
 pub use async_trait::async_trait;

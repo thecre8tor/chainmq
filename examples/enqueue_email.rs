@@ -1,7 +1,10 @@
+use std::net::SocketAddr;
+
+use axum::Router;
 use chainmq::RedisClient;
 use chainmq::{
-    Job, JobContext, JobOptions, Priority, Queue, QueueOptions, Result, async_trait,
-    serde_json::json, start_web_ui_simple,
+    Job, JobContext, JobOptions, Priority, Queue, QueueOptions, Result, WebUIMountConfig,
+    async_trait, chainmq_dashboard_router, serde_json::json,
 };
 use serde::{Deserialize, Serialize};
 
@@ -92,14 +95,16 @@ async fn main() -> anyhow::Result<()> {
 
     println!("\n[enqueue] Jobs have been enqueued!");
 
-    // Start the web UI - it blocks until Ctrl+C, keeping the process alive
-    let ui_queue = Queue::new(QueueOptions {
-        redis: RedisClient::Url(redis_url),
+    let mount = WebUIMountConfig {
+        ui_path: "/dashboard".to_string(),
         ..Default::default()
-    })
-    .await?;
-
-    start_web_ui_simple(ui_queue).await?;
+    };
+    let dashboard = chainmq_dashboard_router(queue, mount)?;
+    let app = Router::new().nest_service("/dashboard", dashboard);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 8085));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    println!("[enqueue] Dashboard at http://127.0.0.1:8085/dashboard/ (Ctrl+C to stop)");
+    axum::serve(listener, app).await?;
 
     Ok(())
 }

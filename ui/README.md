@@ -23,9 +23,9 @@ A beautiful, modern web interface for managing and monitoring your ChainMQ job q
    cargo run --example web_ui
    ```
 
-3. Open your browser and navigate to:
+3. Open your browser (the example binds port **8080** and nests the UI at **`/dashboard/`**):
    ```
-   http://127.0.0.1:8080
+   http://127.0.0.1:8080/dashboard/
    ```
 
 ## Configuration

@@ -1,36 +1,32 @@
-// examples/start_ui.rs
-// Example showing how to start the web UI automatically with a custom path
+// Example: Axum server with the ChainMQ dashboard nested at a custom path.
 
-use chainmq::{Queue, QueueOptions, RedisClient, WebUIConfig, start_web_ui};
+use std::net::SocketAddr;
+
+use axum::Router;
+use chainmq::{Queue, QueueOptions, RedisClient, WebUIMountConfig, chainmq_dashboard_router};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging
     tracing_subscriber::fmt::try_init().ok();
 
-    // Create queue with your Redis connection
     let options = QueueOptions {
         redis: RedisClient::Url("redis://127.0.0.1:6370".into()),
         ..Default::default()
     };
     let queue = Queue::new(options).await?;
 
-    // Configure the web UI
-    let ui_config = WebUIConfig {
-        port: 8080,
+    let mount = WebUIMountConfig {
         ui_path: "/dashboard".to_string(),
         ..Default::default()
     };
 
-    println!("Starting ChainMQ Web UI...");
-    println!(
-        "Access the dashboard at: http://127.0.0.1:{}{}",
-        ui_config.port, ui_config.ui_path
-    );
+    let dashboard = chainmq_dashboard_router(queue, mount)?;
 
-    // Start the web UI server
-    // This will run until the process is terminated
-    start_web_ui(queue, ui_config).await?.await?;
+    let app = Router::new().nest_service("/dashboard", dashboard);
 
+    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    println!("Dashboard at http://127.0.0.1:8080/dashboard/");
+    axum::serve(listener, app).await?;
     Ok(())
 }

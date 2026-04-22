@@ -1,6 +1,8 @@
 # ChainMQ Web UI
 
-The ChainMQ Web UI provides a modern, BullMQ-style dashboard for monitoring and managing your job queues. Run **one** UI server with a `Queue` configured for your Redis instance and `key_prefix`; it lists and manages **every** logical queue name (`Job::queue_name()`) in that namespace.
+The ChainMQ Web UI provides a modern, BullMQ-style dashboard for monitoring and managing your job queues. Use **one** [`Queue`](https://docs.rs/chainmq/latest/chainmq/struct.Queue.html) configured for your Redis instance and `key_prefix`; it lists and manages **every** logical queue name (`Job::queue_name()`) in that namespace.
+
+The library **does not start an HTTP server**. You choose the host, port, and TLS on your Axum or Actix app, then **mount** the dashboard routes at your chosen base path.
 
 ## Features
 
@@ -25,53 +27,75 @@ The UI scales from **desktop** (persistent sidebar, wide tables, multi-column jo
 | :-----------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------: |
 | ![ChainMQ dashboard: queue view on a narrow screen](docs/images/dashboard/mobile-queue.png) | ![ChainMQ dashboard: job detail on a narrow screen](docs/images/dashboard/mobile-job-detail.png) |
 
-## Quick Start
+## Quick start
 
-### 1. Enable the web-ui feature
+### 1. Cargo features
 
-The `web-ui` feature is **enabled by default** on current `chainmq` releases (for example **1.1.x**). You only need to set it explicitly when you disabled default features:
+- **`web-ui`** (default): alias for **`web-ui-axum`** — nestable **Axum** [`Router`](https://docs.rs/axum/latest/axum/struct.Router.html) via [`chainmq_dashboard_router`](https://docs.rs/chainmq/latest/chainmq/fn.chainmq_dashboard_router.html).
+- **`web-ui-axum`**: Axum + cookie-backed sessions (same idea as before: dashboard-only JSON routes).
+- **`web-ui-actix`**: optional **Actix** integration via [`configure_chainmq_web_ui`](https://docs.rs/chainmq/latest/chainmq/fn.configure_chainmq_web_ui.html) (no `HttpServer` inside `chainmq`).
+
+Smaller builds without any dashboard:
 
 ```toml
 [dependencies]
-chainmq = { version = "1.1.2", features = ["web-ui"], default-features = false }
+chainmq = { version = "1.2.0", default-features = false }
 ```
 
-Otherwise a plain dependency on `chainmq = "1.1"` is enough for `start_web_ui` / `start_web_ui_simple`.
+Actix-only consumers:
 
-### 2. Start the UI server
+```toml
+chainmq = { version = "1.2.0", default-features = false, features = ["web-ui-actix"] }
+```
 
-Redis is selected on [`QueueOptions`](https://docs.rs/chainmq/latest/chainmq/struct.QueueOptions.html) via **`redis`** ([`RedisClient`](https://docs.rs/chainmq/latest/chainmq/enum.RedisClient.html)), not a `redis_url` field. [`QueueOptions::default`](https://docs.rs/chainmq/latest/chainmq/struct.QueueOptions.html#impl-Default-for-QueueOptions) uses `RedisClient::Url("redis://127.0.0.1:6379".into())` and `key_prefix: "rbq"`; use the same `key_prefix` (and Redis target) as your workers so the dashboard sees your jobs.
+### 2. Axum: mount the router
+
+Redis is selected on [`QueueOptions`](https://docs.rs/chainmq/latest/chainmq/struct.QueueOptions.html) via **`redis`** ([`RedisClient`](https://docs.rs/chainmq/latest/chainmq/enum.RedisClient.html)). Use the same `key_prefix` (and Redis target) as your workers so the dashboard sees your jobs.
 
 ```rust
-use chainmq::{Queue, QueueOptions, RedisClient, start_web_ui, WebUIConfig};
+use std::net::SocketAddr;
+
+use axum::Router;
+use chainmq::{
+    chainmq_dashboard_router, Queue, QueueOptions, RedisClient, WebUIMountConfig,
+};
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> std::io::Result<()> {
     let queue = Queue::new(QueueOptions {
         redis: RedisClient::Url("redis://127.0.0.1:6379".into()),
         ..Default::default()
     })
     .await?;
 
-    // Or, if defaults match your Redis: `Queue::new(QueueOptions::default()).await?`
-
-    let ui_config = WebUIConfig {
-        port: 8080,
+    let mount = WebUIMountConfig {
         ui_path: "/dashboard".to_string(),
         ..Default::default()
     };
 
-    start_web_ui(queue, ui_config).await?.await?;
+    let dashboard = chainmq_dashboard_router(queue, mount)?;
+    let app = Router::new().nest_service("/dashboard", dashboard);
 
-    Ok(())
+    // Use `nest_service` (not `nest`) so both `/dashboard` and `/dashboard/` reach the UI; Axum’s
+    // `nest` only registers the exact prefix path and does not match a trailing slash on it.
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await
 }
 ```
 
-For a runnable binary that reads **`REDIS_URL`**, see [`examples/web_ui.rs`](./examples/web_ui.rs).
+If [`WebUIMountConfig::ui_path`](https://docs.rs/chainmq/latest/chainmq/struct.WebUIMountConfig.html) is `"/"`, **merge** the router at the root of your app instead of nesting (avoid path clashes with your other routes).
 
-### 3. Access the Dashboard
+For a runnable example, see [`examples/web_ui.rs`](./examples/web_ui.rs).
 
-Open your browser and navigate to the UI, for example `http://127.0.0.1:8080/dashboard` (adjust host, port, and path to match your `WebUIConfig`). Unless you set `WebUIConfig { auth: None, .. }`, you will be prompted to sign in; the built-in default username and password are **`ChainMQ`** / **`ChainMQ`** until you override `WebUIConfig.auth`. The dashboard loads data over HTTP paths under `{ui_path}/api`, but those handlers are **not** a supported public REST API: use the web UI, not curl or other HTTP clients.
+### 3. Actix: `configure`
+
+Enable **`web-ui-actix`**, share one `Arc<tokio::sync::Mutex<Queue>>` across workers, and call [`configure_chainmq_web_ui`](https://docs.rs/chainmq/latest/chainmq/fn.configure_chainmq_web_ui.html) from `App::configure`. You still bind and run [`HttpServer`](https://docs.rs/actix-web/latest/actix_web/struct.HttpServer.html) in **your** binary.
+
+### 4. Open the dashboard
+
+Use the URL your server prints (for example `http://127.0.0.1:8080/dashboard/` when nested at `/dashboard` on port 8080). Unless you set `WebUIMountConfig { auth: None, .. }`, sign-in defaults are **`ChainMQ`** / **`ChainMQ`** until you override `auth`. JSON lives under `{ui_path}/api/...`; those routes are **not** a supported public HTTP API (same-origin browser fetches only).
 
 ## Job execution logs
 
@@ -83,18 +107,18 @@ The **Logs** tab on a job reads lines stored in **Redis** (same instance and key
 
 Optional: cap retention with **`QueueOptions::job_logs_max_lines`** (default `500`). Logs for a job are removed when the job row is deleted.
 
-## Configuration Options
+## Configuration
 
-### WebUIConfig
+### `WebUIMountConfig`
 
-**Bind address** (`bind_host`), **port**, and **HTTP base path** (`ui_path`) are configurable. Static assets (`index.html`, `app.js`, `styles.css`, `favicon.svg`) are **embedded in the library binary** at compile time; consuming applications do not need a `ui/` directory on disk (see [UI files](#ui-files)).
+Mount-only settings (no bind address or port in this crate):
 
 ```rust
-pub struct WebUIConfig {
-    pub bind_host: String,
-    pub port: u16,
+pub struct WebUIMountConfig {
+    /// Base path for the UI (e.g. `/dashboard`, `/admin/queues`). Use `/` only if the dashboard
+    /// owns those paths on this router.
     pub ui_path: String,
-    /// When `Some`, the dashboard requires login (signed HttpOnly session cookie). Default: `Some(WebUIAuth::default())`.
+    /// When `Some`, the dashboard requires login (HttpOnly session cookie).
     pub auth: Option<WebUIAuth>,
     /// 64-byte signing key for session cookies; if `None` while `auth` is set, a fixed **dev-only** key is used.
     pub session_secret: Option<[u8; 64]>,
@@ -108,74 +132,44 @@ pub struct WebUIAuth {
 }
 ```
 
-Defaults for `WebUIAuth` are username **`ChainMQ`** and password **`ChainMQ`** (for local use only; override in production).
-
 ### Examples
 
-#### Default Configuration (Root Path)
+#### Default (login on, root path in config — nest or merge accordingly)
 
 ```rust
-let config = WebUIConfig::default();
-// UI: http://127.0.0.1:8085/  (default port is 8085)
-// Login is enabled by default (username / password: ChainMQ / ChainMQ) until you change `auth`.
+let config = WebUIMountConfig::default();
+// ui_path default is "/"; merge router at app root or pick a dedicated prefix.
 ```
 
-#### Custom Dashboard Path
+#### Custom dashboard path
 
 ```rust
-let config = WebUIConfig {
-    port: 8080,
+let config = WebUIMountConfig {
     ui_path: "/dashboard".to_string(),
     ..Default::default()
 };
-// UI: http://127.0.0.1:8080/dashboard
+// app.nest_service("/dashboard", chainmq_dashboard_router(queue, config)?)
 ```
 
-#### Custom Port and Path
+#### Operator credentials
 
 ```rust
-let config = WebUIConfig {
-    port: 3000,
-    ui_path: "/admin/queues".to_string(),
-    ..Default::default()
-};
-// UI: http://127.0.0.1:3000/admin/queues
-```
+use chainmq::{WebUIAuth, WebUIMountConfig};
 
-#### Listen on All Interfaces (e.g. Containers or Direct LAN Access)
-
-```rust
-let config = WebUIConfig {
-    bind_host: "0.0.0.0".to_string(),
-    port: 8080,
-    ..Default::default()
-};
-// Prefer a reverse proxy or firewall when bind_host is not loopback.
-```
-
-#### Dashboard login (default on)
-
-`WebUIConfig::default()` enables session login with `WebUIAuth::default()` (**`ChainMQ` / `ChainMQ`**). Set your own operator credentials in Rust:
-
-```rust
-use chainmq::{WebUIAuth, WebUIConfig};
-
-let config = WebUIConfig {
+let config = WebUIMountConfig {
     auth: Some(WebUIAuth {
         username: "operator".into(),
         password: std::env::var("DASHBOARD_PASSWORD").unwrap(),
     }),
-    // Use a random 64-byte key in production, e.g. read from env or a secrets manager:
-    // session_secret: Some(*b"0123456789012345678901234567890123456789012345678901234567890123"),
-    cookie_secure: true, // when serving the UI over HTTPS
+    cookie_secure: true,
     ..Default::default()
 };
 ```
 
-To **turn off** the login screen (only for trusted local use), set `auth: None`:
+Disable login (trusted local use only):
 
 ```rust
-let config = WebUIConfig {
+let config = WebUIMountConfig {
     auth: None,
     ..Default::default()
 };
@@ -190,49 +184,33 @@ The dashboard is served from assets **compiled into** the `chainmq` crate (via [
 - `styles.css` — styling
 - `favicon.svg` — favicon
 
-**Developing ChainMQ:** edit files under [`ui/`](./ui/) and run `cargo build` / `cargo run` (or your IDE’s equivalent) so the embed is refreshed. **Depending on `chainmq`:** no extra filesystem layout is required; the dashboard works regardless of the process working directory.
+**Developing ChainMQ:** edit files under [`ui/`](./ui/) and run `cargo build` so the embed is refreshed. **Depending on `chainmq`:** no extra filesystem layout is required.
 
-The SPA resolves its data base path from `ui_path` (paths under `{ui_path}/api/...`).
+The SPA resolves its API base from the browser path (`{ui_path}/api/...`).
 
 ## HTTP JSON and the dashboard
 
-The UI issues `fetch` calls to `{ui_path}/api/...` with **credentials** (session cookie) when auth is enabled. Those routes exist only to support the bundled dashboard: they require a **same-origin** (or same-site) browser request (`Sec-Fetch-Site`), so command-line tools and generic HTTP clients receive **403 Forbidden**. They are not documented as a stable public API; operate the queue through the UI (or through your Rust `Queue` / workers in application code).
+The UI issues `fetch` calls to `{ui_path}/api/...` with **credentials** when auth is enabled. Those routes require a **same-origin** (or same-site) browser request (`Sec-Fetch-Site`), so generic HTTP clients get **403 Forbidden**. They are not a stable public API; use the UI or the Rust `Queue` / workers in code.
 
-## Running in Production
+## Running in production
 
-For production use, consider:
-
-1. **Reverse Proxy**: Use nginx or similar to handle SSL/TLS
-2. **Authentication**: Set `WebUIConfig.auth` with strong credentials, `session_secret: Some([u8; 64])` from a CSPRNG, and `cookie_secure: true` when serving over HTTPS. The built-in login is for an **internal operator dashboard**, not multi-tenant identity.
-3. **Static assets**: Dashboard assets ship inside the `chainmq` binary; to customize the UI in a fork or local build, change files under `ui/` and rebuild your application so the dependency is recompiled.
-
-Example with environment variables for **port** and **path** only:
-
-```rust
-let config = WebUIConfig {
-    port: std::env::var("UI_PORT")
-        .unwrap_or_else(|_| "8080".to_string())
-        .parse()
-        .unwrap_or(8080),
-    ui_path: std::env::var("UI_PATH").unwrap_or_else(|_| "/".to_string()),
-};
-```
+1. **Reverse proxy**: Terminate TLS in front of your Axum/Actix process.
+2. **Authentication**: Set `WebUIMountConfig.auth` with strong credentials, `session_secret: Some([u8; 64])` from a CSPRNG, and `cookie_secure: true` over HTTPS.
+3. **Static assets**: Shipped inside the `chainmq` binary; customize in a fork by editing `ui/` and rebuilding.
 
 ## Troubleshooting
 
 ### UI not loading
 
-- Confirm you rebuilt after upgrading or patching `chainmq` (embedded assets come from the compiled crate version).
-- Check the browser console for errors (e.g. blocked scripts or mixed content).
+- Rebuild after upgrading `chainmq` (embedded assets follow the compiled crate).
+- Check the browser console (blocked scripts, mixed content).
 
 ### Dashboard data not loading
 
-- Open the UI in a normal browser tab (same origin as the server). Direct `curl` or scripts against `/api/...` are intentionally rejected.
-- Check the browser console and network tab for failed requests.
-- Verify `ui_path` matches how you open the app (including trailing slashes vs none).
-- Ensure Redis is reachable and the queue is initialized.
+- Open the UI in a normal browser tab (same origin as the app). `curl` against `/api/...` is intentionally rejected.
+- Verify `ui_path` matches how you nest/merge the router (including trailing slash redirects for non-root prefixes).
+- Ensure Redis is reachable and the queue matches workers/enqueuers.
 
 ### Port already in use
 
-- Change the `port` in `WebUIConfig`
-- Or stop the process using that port
+- Change the **listen address in your application** (not in `chainmq`).

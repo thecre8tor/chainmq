@@ -1,6 +1,6 @@
 [package]
 name = "chainmq"
-version = "1.1.2"
+version = "1.2.0"
 edition = "2024"
 authors = ["Alexander Nitiola <cre8tor.alexander@gmail.com>"]
 description = "A Redis-backed, type-safe job queue for Rust. Provides job registration and execution, delayed jobs, retries with backoff, and scalable workers."
@@ -32,28 +32,67 @@ version = "0.11.0"
 features = ["cookie-session"]
 optional = true
 
+[dependencies.actix-web]
+version = "4.4"
+optional = true
+
+[dependencies.axum]
+version = "0.8"
+optional = true
+
 [dependencies.bcrypt]
 version = "0.19.0"
 optional = true
 
-[dev-dependencies]
-tokio-test = "0.4"
-actix-web = "4.4"
+[dependencies.cookie]
+version = "0.18"
+optional = true
 
-[features]
-default = ["web-ui"]
-web-ui = [
-    "dep:actix-web",
-    "dep:actix-session",
-    "dep:bcrypt",
-    "dep:rust-embed",
-]
-
-[dependencies.actix-web]
-version = "4.4"
+[dependencies.http]
+version = "1"
 optional = true
 
 [dependencies.rust-embed]
 version = "8"
 optional = true
 features = ["include-exclude"]
+
+[dependencies.tower-http]
+version = "0.6"
+optional = true
+features = ["set-header"]
+
+[dependencies.tower-sessions]
+version = "0.14"
+optional = true
+features = ["axum-core"]
+
+[dependencies.tower-sessions-cookie-store]
+version = "0.5"
+optional = true
+
+[dev-dependencies]
+tokio-test = "0.4"
+actix-web = "4.4"
+axum = "0.8"
+http = "1"
+http-body-util = "0.1"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["set-header"] }
+tower-sessions = { version = "0.14", features = ["axum-core"] }
+tower-sessions-cookie-store = "0.5"
+
+[features]
+default = ["web-ui"]
+# Back-compat alias: same as `web-ui-axum` (nestable Axum dashboard).
+web-ui = ["web-ui-axum"]
+web-ui-core = ["dep:rust-embed", "dep:bcrypt", "dep:http"]
+web-ui-axum = [
+    "web-ui-core",
+    "dep:axum",
+    "dep:cookie",
+    "dep:tower-sessions",
+    "dep:tower-sessions-cookie-store",
+    "dep:tower-http",
+]
+web-ui-actix = ["web-ui-core", "dep:actix-web", "dep:actix-session"]
