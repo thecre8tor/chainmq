@@ -1,6 +1,6 @@
 //! Shared dashboard types, static assets, path helpers, and queue JSON handlers.
 
-use crate::{JobState, Queue};
+use crate::{JobOptions, JobRegistry, JobState, Queue, RepeatCatchUp};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -126,6 +126,8 @@ pub struct WebUIMountConfig {
     pub session_secret: Option<[u8; 64]>,
     /// `Secure` flag on the session cookie (use `true` behind HTTPS).
     pub cookie_secure: bool,
+    /// When `Some`, repeat promotion and “add repeat” APIs can materialize jobs by type name.
+    pub job_registry: Option<Arc<JobRegistry>>,
 }
 
 impl Default for WebUIMountConfig {
@@ -135,6 +137,7 @@ impl Default for WebUIMountConfig {
             auth: Some(WebUIAuth::default()),
             session_secret: None,
             cookie_secure: false,
+            job_registry: None,
         }
     }
 }
@@ -591,6 +594,202 @@ pub async fn api_process_delayed(
                 "success": true,
                 "message": format!("Moved {} delayed jobs to waiting", moved_count),
                 "moved_count": moved_count
+            }),
+        ),
+        Err(e) => (
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": e.to_string() }),
+        ),
+    }
+}
+
+pub async fn api_queue_paused(
+    queue: &Queue,
+    queue_name: &str,
+) -> (http::StatusCode, serde_json::Value) {
+    match queue.is_queue_paused(queue_name).await {
+        Ok(paused) => (
+            http::StatusCode::OK,
+            serde_json::json!({ "paused": paused }),
+        ),
+        Err(e) => (
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": e.to_string() }),
+        ),
+    }
+}
+
+pub async fn api_pause_queue(
+    queue: &Queue,
+    queue_name: &str,
+) -> (http::StatusCode, serde_json::Value) {
+    match queue.pause_queue(queue_name).await {
+        Ok(()) => (
+            http::StatusCode::OK,
+            serde_json::json!({ "success": true, "paused": true }),
+        ),
+        Err(e) => (
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": e.to_string() }),
+        ),
+    }
+}
+
+pub async fn api_resume_queue(
+    queue: &Queue,
+    queue_name: &str,
+) -> (http::StatusCode, serde_json::Value) {
+    match queue.resume_queue(queue_name).await {
+        Ok(()) => (
+            http::StatusCode::OK,
+            serde_json::json!({ "success": true, "paused": false }),
+        ),
+        Err(e) => (
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": e.to_string() }),
+        ),
+    }
+}
+
+pub async fn api_list_repeats(
+    queue: &Queue,
+    queue_name: &str,
+) -> (http::StatusCode, serde_json::Value) {
+    match queue.list_repeats(queue_name).await {
+        Ok(repeats) => (
+            http::StatusCode::OK,
+            serde_json::json!({ "repeats": repeats }),
+        ),
+        Err(e) => (
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": e.to_string() }),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct AddRepeatIntervalRequest {
+    pub schedule_id: String,
+    pub job_name: String,
+    pub payload: serde_json::Value,
+    #[serde(default)]
+    pub options: JobOptions,
+    pub interval_secs: u64,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub catch_up: RepeatCatchUp,
+    /// Same semantics as [`Queue::upsert_repeat_interval`].
+    pub first_fire_in_secs: Option<u64>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Deserialize)]
+pub struct AddRepeatCronRequest {
+    pub schedule_id: String,
+    pub job_name: String,
+    pub cron_expr: String,
+    pub payload: serde_json::Value,
+    #[serde(default)]
+    pub options: JobOptions,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+pub async fn api_add_repeat_interval(
+    queue: &Queue,
+    queue_name: &str,
+    body: AddRepeatIntervalRequest,
+) -> (http::StatusCode, serde_json::Value) {
+    match queue
+        .upsert_repeat_interval(
+            queue_name,
+            &body.schedule_id,
+            &body.job_name,
+            body.payload,
+            body.options,
+            body.interval_secs,
+            body.enabled,
+            body.catch_up,
+            body.first_fire_in_secs,
+        )
+        .await
+    {
+        Ok(()) => (
+            http::StatusCode::OK,
+            serde_json::json!({ "success": true, "schedule_id": body.schedule_id }),
+        ),
+        Err(e) => (
+            http::StatusCode::BAD_REQUEST,
+            serde_json::json!({ "error": e.to_string() }),
+        ),
+    }
+}
+
+pub async fn api_add_repeat_cron(
+    queue: &Queue,
+    queue_name: &str,
+    body: AddRepeatCronRequest,
+) -> (http::StatusCode, serde_json::Value) {
+    match queue
+        .upsert_repeat_cron(
+            queue_name,
+            &body.schedule_id,
+            &body.job_name,
+            &body.cron_expr,
+            body.payload,
+            body.options,
+            body.enabled,
+        )
+        .await
+    {
+        Ok(()) => (
+            http::StatusCode::OK,
+            serde_json::json!({ "success": true, "schedule_id": body.schedule_id }),
+        ),
+        Err(e) => (
+            http::StatusCode::BAD_REQUEST,
+            serde_json::json!({ "error": e.to_string() }),
+        ),
+    }
+}
+
+pub async fn api_remove_repeat(
+    queue: &Queue,
+    queue_name: &str,
+    schedule_id: &str,
+) -> (http::StatusCode, serde_json::Value) {
+    match queue.remove_repeat(queue_name, schedule_id).await {
+        Ok(()) => (http::StatusCode::OK, serde_json::json!({ "success": true })),
+        Err(e) => (
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": e.to_string() }),
+        ),
+    }
+}
+
+pub async fn api_process_repeat(
+    queue: &Queue,
+    queue_name: &str,
+    registry: Option<&JobRegistry>,
+) -> (http::StatusCode, serde_json::Value) {
+    let Some(reg) = registry else {
+        return (
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({
+                "error": "WebUIMountConfig.job_registry is not set; cannot process repeat jobs from the dashboard."
+            }),
+        );
+    };
+    match queue.process_repeat(queue_name, reg).await {
+        Ok(n) => (
+            http::StatusCode::OK,
+            serde_json::json!({
+                "success": true,
+                "promoted_count": n,
             }),
         ),
         Err(e) => (

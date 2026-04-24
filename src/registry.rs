@@ -1,5 +1,5 @@
 // src/registry.rs
-use crate::{ChainMQError, Job, JobContext, Result};
+use crate::{ChainMQError, Job, JobContext, JobId, JobOptions, Queue, Result};
 use std::any::TypeId;
 use std::collections::HashMap;
 
@@ -52,11 +52,32 @@ impl JobRegistry {
     pub fn contains_job(&self, name: &str) -> bool {
         self.jobs.contains_key(name)
     }
+
+    /// Enqueue a job by registered type name and JSON payload (same deserialization as [`Self::execute_job`]).
+    pub async fn enqueue_by_name(
+        &self,
+        queue: &Queue,
+        name: &str,
+        payload: serde_json::Value,
+        options: JobOptions,
+    ) -> Result<JobId> {
+        let executor = self
+            .jobs
+            .get(name)
+            .ok_or_else(|| ChainMQError::Registry(format!("Job type '{}' not registered", name)))?;
+        executor.enqueue(queue, payload, options).await
+    }
 }
 
 #[async_trait::async_trait]
 trait JobExecutor: Send + Sync {
     async fn execute(&self, payload: serde_json::Value, ctx: &JobContext) -> Result<()>;
+    async fn enqueue(
+        &self,
+        queue: &Queue,
+        payload: serde_json::Value,
+        options: JobOptions,
+    ) -> Result<JobId>;
 }
 
 struct TypedJobExecutor<T: Job> {
@@ -76,5 +97,15 @@ impl<T: Job> JobExecutor for TypedJobExecutor<T> {
     async fn execute(&self, payload: serde_json::Value, ctx: &JobContext) -> Result<()> {
         let job: T = serde_json::from_value(payload)?;
         job.perform(ctx).await
+    }
+
+    async fn enqueue(
+        &self,
+        queue: &Queue,
+        payload: serde_json::Value,
+        options: JobOptions,
+    ) -> Result<JobId> {
+        let job: T = serde_json::from_value(payload)?;
+        queue.enqueue_with_options(job, options).await
     }
 }

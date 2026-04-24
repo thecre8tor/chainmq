@@ -23,13 +23,14 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tower_sessions::Session;
 use tower_sessions_cookie_store::{CookieSessionConfig, CookieSessionManagerLayer, Key};
 
-use crate::Queue;
+use crate::{JobRegistry, Queue};
 
 use super::core::{
-    self, CleanQueueRequest, DeleteJobRequest, JobLogsQuery, LoginRequest, QueueEventsQuery,
-    RetryJobRequest, SESSION_AUTH_KEY, UiAssets, WebUIMountConfig, embedded_asset_rel_key,
-    embedded_content_type, full_path_for_embedded_request, is_ui_auth_public_route,
-    json_reauth_value, session_cookie_path, session_signing_key_material, verify_credentials,
+    self, AddRepeatCronRequest, AddRepeatIntervalRequest, CleanQueueRequest, DeleteJobRequest,
+    JobLogsQuery, LoginRequest, QueueEventsQuery, RetryJobRequest, SESSION_AUTH_KEY, UiAssets,
+    WebUIMountConfig, embedded_asset_rel_key, embedded_content_type,
+    full_path_for_embedded_request, is_ui_auth_public_route, json_reauth_value,
+    session_cookie_path, session_signing_key_material, verify_credentials,
 };
 
 /// Application state for the dashboard (queue + auth + static URL prefix).
@@ -38,6 +39,7 @@ pub struct WebUiState {
     pub queue: Arc<Mutex<Queue>>,
     pub auth: Option<Arc<core::UiLoginRuntime>>,
     pub static_prefix: String,
+    pub job_registry: Option<Arc<JobRegistry>>,
 }
 
 /// Build a [`Router`] for the dashboard: routes under `/api/...` plus static files at `/` (relative
@@ -69,6 +71,7 @@ pub fn chainmq_dashboard_router(queue: Queue, config: WebUIMountConfig) -> std::
         queue: Arc::new(Mutex::new(queue)),
         auth,
         static_prefix: static_prefix.clone(),
+        job_registry: config.job_registry.clone(),
     };
 
     let key_bytes = session_signing_key_material(&config);
@@ -112,6 +115,26 @@ pub fn chainmq_dashboard_router(queue: Queue, config: WebUIMountConfig) -> std::
         .route(
             "/queues/{queue_name}/process-delayed",
             post(process_delayed_axum),
+        )
+        .route(
+            "/queues/{queue_name}/process-repeat",
+            post(process_repeat_axum),
+        )
+        .route("/queues/{queue_name}/paused", get(queue_paused_axum))
+        .route("/queues/{queue_name}/pause", post(pause_queue_axum))
+        .route("/queues/{queue_name}/resume", post(resume_queue_axum))
+        .route("/queues/{queue_name}/repeats", get(list_repeats_axum))
+        .route(
+            "/queues/{queue_name}/repeats/interval",
+            post(add_repeat_interval_axum),
+        )
+        .route(
+            "/queues/{queue_name}/repeats/cron",
+            post(add_repeat_cron_axum),
+        )
+        .route(
+            "/queues/{queue_name}/repeats/{schedule_id}",
+            delete(remove_repeat_axum),
         )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -409,6 +432,81 @@ async fn process_delayed_axum(
 ) -> impl IntoResponse {
     let q = st.queue.lock().await;
     let (status, json) = core::api_process_delayed(&*q, &queue_name).await;
+    (status, Json(json))
+}
+
+async fn process_repeat_axum(
+    State(st): State<WebUiState>,
+    Path(queue_name): Path<String>,
+) -> impl IntoResponse {
+    let q = st.queue.lock().await;
+    let reg = st.job_registry.as_deref();
+    let (status, json) = core::api_process_repeat(&*q, &queue_name, reg).await;
+    (status, Json(json))
+}
+
+async fn queue_paused_axum(
+    State(st): State<WebUiState>,
+    Path(queue_name): Path<String>,
+) -> impl IntoResponse {
+    let q = st.queue.lock().await;
+    let (status, json) = core::api_queue_paused(&*q, &queue_name).await;
+    (status, Json(json))
+}
+
+async fn pause_queue_axum(
+    State(st): State<WebUiState>,
+    Path(queue_name): Path<String>,
+) -> impl IntoResponse {
+    let q = st.queue.lock().await;
+    let (status, json) = core::api_pause_queue(&*q, &queue_name).await;
+    (status, Json(json))
+}
+
+async fn resume_queue_axum(
+    State(st): State<WebUiState>,
+    Path(queue_name): Path<String>,
+) -> impl IntoResponse {
+    let q = st.queue.lock().await;
+    let (status, json) = core::api_resume_queue(&*q, &queue_name).await;
+    (status, Json(json))
+}
+
+async fn list_repeats_axum(
+    State(st): State<WebUiState>,
+    Path(queue_name): Path<String>,
+) -> impl IntoResponse {
+    let q = st.queue.lock().await;
+    let (status, json) = core::api_list_repeats(&*q, &queue_name).await;
+    (status, Json(json))
+}
+
+async fn add_repeat_interval_axum(
+    State(st): State<WebUiState>,
+    Path(queue_name): Path<String>,
+    Json(body): Json<AddRepeatIntervalRequest>,
+) -> impl IntoResponse {
+    let q = st.queue.lock().await;
+    let (status, json) = core::api_add_repeat_interval(&*q, &queue_name, body).await;
+    (status, Json(json))
+}
+
+async fn add_repeat_cron_axum(
+    State(st): State<WebUiState>,
+    Path(queue_name): Path<String>,
+    Json(body): Json<AddRepeatCronRequest>,
+) -> impl IntoResponse {
+    let q = st.queue.lock().await;
+    let (status, json) = core::api_add_repeat_cron(&*q, &queue_name, body).await;
+    (status, Json(json))
+}
+
+async fn remove_repeat_axum(
+    State(st): State<WebUiState>,
+    Path((queue_name, schedule_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let q = st.queue.lock().await;
+    let (status, json) = core::api_remove_repeat(&*q, &queue_name, &schedule_id).await;
     (status, Json(json))
 }
 

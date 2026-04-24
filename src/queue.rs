@@ -1,13 +1,17 @@
 use crate::redis::RedisClient;
 // src/queue.rs
 use crate::{
-    ChainMQError, Job, JobId, JobLogLine, JobMetadata, JobOptions, JobState, Priority, Result,
+    ChainMQError, Job, JobId, JobLogLine, JobMetadata, JobOptions, JobRegistry, JobState, Priority,
+    Result,
     lua::LuaScripts,
+    repeat::{RepeatCatchUp, RepeatScheduleInfo},
 };
 use chrono::Utc;
+use cron::Schedule as CronSchedule;
 use redis::AsyncCommands;
 use serde_json;
 use std::collections::HashSet;
+use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use redis::aio::ConnectionManager;
@@ -509,6 +513,408 @@ impl Queue {
         Ok(ids.len())
     }
 
+    const REPEAT_PROMOTION_TICK_TTL_SECS: i64 = 86400;
+
+    fn repeat_zset_key(&self, queue_name: &str) -> String {
+        format!("{}:queue:{}:repeat", self.options.key_prefix, queue_name)
+    }
+
+    fn repeat_hash_key(&self, schedule_id: &str) -> String {
+        format!("{}:repeat:{}", self.options.key_prefix, schedule_id)
+    }
+
+    fn repeat_tick_key(&self, queue_name: &str, schedule_id: &str, fire_unix: i64) -> String {
+        format!(
+            "{}:repeat:tick:{}:{}:{}",
+            self.options.key_prefix, queue_name, schedule_id, fire_unix
+        )
+    }
+
+    fn catch_up_to_str(c: RepeatCatchUp) -> &'static str {
+        match c {
+            RepeatCatchUp::One => "one",
+            RepeatCatchUp::All => "all",
+            RepeatCatchUp::None => "none",
+        }
+    }
+
+    /// Register or replace an **interval** repeat schedule for `queue_name`.
+    ///
+    /// `first_fire_in_secs`: `None` means first fire is after `interval_secs` seconds (BullMQ-style).
+    /// `Some(0)` schedules the first fire as due immediately on the next [`Queue::process_repeat`].
+    pub async fn upsert_repeat_interval(
+        &self,
+        queue_name: &str,
+        schedule_id: &str,
+        job_name: &str,
+        payload: serde_json::Value,
+        mut options: JobOptions,
+        interval_secs: u64,
+        enabled: bool,
+        catch_up: RepeatCatchUp,
+        first_fire_in_secs: Option<u64>,
+    ) -> Result<()> {
+        if interval_secs == 0 {
+            return Err(ChainMQError::Worker(
+                "interval_secs must be greater than 0".into(),
+            ));
+        }
+        options.job_id = None;
+        let payload_s = serde_json::to_string(&payload)?;
+        let options_s = serde_json::to_string(&options)?;
+        let next_ts = Utc::now().timestamp() + first_fire_in_secs.unwrap_or(interval_secs) as i64;
+        let repeat_key = self.repeat_zset_key(queue_name);
+        let hkey = self.repeat_hash_key(schedule_id);
+        let mut conn = self.async_conn.clone();
+        let enabled_s = if enabled { "1" } else { "0" };
+        let _: () = redis::pipe()
+            .atomic()
+            .hset(&hkey, "queue_name", queue_name)
+            .hset(&hkey, "job_name", job_name)
+            .hset(&hkey, "payload", &payload_s)
+            .hset(&hkey, "options_json", &options_s)
+            .hset(&hkey, "interval_secs", interval_secs.to_string())
+            .hset(&hkey, "cron_expr", "")
+            .hset(&hkey, "enabled", enabled_s)
+            .hset(&hkey, "catch_up", Self::catch_up_to_str(catch_up))
+            .zadd(&repeat_key, schedule_id, next_ts)
+            .query_async(&mut conn)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        let registry_key = self.queues_registry_key();
+        let _: () = conn
+            .sadd::<_, _, ()>(&registry_key, queue_name)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        self.emit_queue_event(
+            queue_name,
+            "repeat_added",
+            None,
+            Some(serde_json::json!({ "scheduleId": schedule_id, "kind": "interval" })),
+            None,
+        )
+        .await;
+        Ok(())
+    }
+
+    /// Register or replace a **cron** repeat schedule (`cron` crate expression, six-field with seconds).
+    pub async fn upsert_repeat_cron(
+        &self,
+        queue_name: &str,
+        schedule_id: &str,
+        job_name: &str,
+        cron_expr: &str,
+        payload: serde_json::Value,
+        mut options: JobOptions,
+        enabled: bool,
+    ) -> Result<()> {
+        let parsed = CronSchedule::from_str(cron_expr)
+            .map_err(|e| ChainMQError::Worker(format!("invalid cron expression: {e}")))?;
+        let next_dt = parsed
+            .after(&Utc::now())
+            .next()
+            .ok_or_else(|| ChainMQError::Worker("cron has no upcoming occurrence".into()))?;
+        options.job_id = None;
+        let payload_s = serde_json::to_string(&payload)?;
+        let options_s = serde_json::to_string(&options)?;
+        let repeat_key = self.repeat_zset_key(queue_name);
+        let hkey = self.repeat_hash_key(schedule_id);
+        let mut conn = self.async_conn.clone();
+        let enabled_s = if enabled { "1" } else { "0" };
+        let _: () = redis::pipe()
+            .atomic()
+            .hset(&hkey, "queue_name", queue_name)
+            .hset(&hkey, "job_name", job_name)
+            .hset(&hkey, "payload", &payload_s)
+            .hset(&hkey, "options_json", &options_s)
+            .hset(&hkey, "interval_secs", "")
+            .hset(&hkey, "cron_expr", cron_expr)
+            .hset(&hkey, "enabled", enabled_s)
+            .hset(&hkey, "catch_up", Self::catch_up_to_str(RepeatCatchUp::One))
+            .zadd(&repeat_key, schedule_id, next_dt.timestamp())
+            .query_async(&mut conn)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        let registry_key = self.queues_registry_key();
+        let _: () = conn
+            .sadd::<_, _, ()>(&registry_key, queue_name)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        self.emit_queue_event(
+            queue_name,
+            "repeat_added",
+            None,
+            Some(serde_json::json!({ "scheduleId": schedule_id, "kind": "cron" })),
+            None,
+        )
+        .await;
+        Ok(())
+    }
+
+    /// Remove a repeat schedule from Redis.
+    pub async fn remove_repeat(&self, queue_name: &str, schedule_id: &str) -> Result<()> {
+        let mut conn = self.async_conn.clone();
+        let repeat_key = self.repeat_zset_key(queue_name);
+        let hkey = self.repeat_hash_key(schedule_id);
+        let _: () = redis::pipe()
+            .atomic()
+            .zrem(&repeat_key, schedule_id)
+            .del(&hkey)
+            .query_async(&mut conn)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        self.emit_queue_event(
+            queue_name,
+            "repeat_removed",
+            None,
+            Some(serde_json::json!({ "scheduleId": schedule_id })),
+            None,
+        )
+        .await;
+        Ok(())
+    }
+
+    /// List repeat schedules for a queue (ZRANGE with scores plus HASH fields).
+    pub async fn list_repeats(&self, queue_name: &str) -> Result<Vec<RepeatScheduleInfo>> {
+        let mut conn = self.async_conn.clone();
+        let repeat_key = self.repeat_zset_key(queue_name);
+        let raw: Vec<String> = redis::cmd("ZRANGE")
+            .arg(&repeat_key)
+            .arg(0isize)
+            .arg(-1isize)
+            .arg("WITHSCORES")
+            .query_async(&mut conn)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        while i + 1 < raw.len() {
+            let schedule_id = raw[i].clone();
+            let next_run_unix: i64 = raw[i + 1].parse().unwrap_or(0);
+            i += 2;
+            let hkey = self.repeat_hash_key(&schedule_id);
+            let qn: Option<String> = conn.hget(&hkey, "queue_name").await.ok().flatten();
+            let job_name: Option<String> = conn.hget(&hkey, "job_name").await.ok().flatten();
+            let enabled_s: Option<String> = conn.hget(&hkey, "enabled").await.ok().flatten();
+            let interval_s: Option<String> = conn.hget(&hkey, "interval_secs").await.ok().flatten();
+            let cron_expr: Option<String> = conn.hget(&hkey, "cron_expr").await.ok().flatten();
+            let catch_s: Option<String> = conn.hget(&hkey, "catch_up").await.ok().flatten();
+            let catch_up = match catch_s.as_deref() {
+                Some("all") => RepeatCatchUp::All,
+                Some("none") => RepeatCatchUp::None,
+                _ => RepeatCatchUp::One,
+            };
+            let interval_secs = interval_s
+                .as_deref()
+                .and_then(|s| if s.is_empty() { None } else { s.parse().ok() });
+            let cron_o = cron_expr.filter(|s| !s.is_empty());
+            out.push(RepeatScheduleInfo {
+                schedule_id,
+                next_run_unix,
+                queue_name: qn.unwrap_or_default(),
+                job_name: job_name.unwrap_or_default(),
+                enabled: enabled_s.as_deref() != Some("0"),
+                interval_secs,
+                cron_expr: cron_o,
+                catch_up,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Promote due interval repeat ticks (Lua) and due cron ticks (Rust), then materialize jobs via `registry`.
+    pub async fn process_repeat(&self, queue_name: &str, registry: &JobRegistry) -> Result<usize> {
+        if self.is_queue_paused(queue_name).await? {
+            return Ok(0);
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let result_str: String = self
+            .scripts
+            .promote_repeat
+            .arg(queue_name)
+            .arg(now)
+            .arg(&self.options.key_prefix)
+            .arg(Self::REPEAT_PROMOTION_TICK_TTL_SECS)
+            .invoke_async(&mut self.async_conn.clone())
+            .await?;
+
+        let mut count = 0usize;
+        for line in result_str.lines().filter(|l| !l.is_empty()) {
+            let mut parts = line.splitn(2, ',');
+            let schedule_id = parts.next().unwrap_or("");
+            let fire_s = parts.next().unwrap_or("");
+            let Ok(fire_unix) = fire_s.parse::<i64>() else {
+                tracing::warn!("repeat lua bad fire_unix: {}", line);
+                continue;
+            };
+            if schedule_id.is_empty() {
+                continue;
+            }
+            if let Ok(c) = self
+                .materialize_repeat_line(queue_name, registry, schedule_id, fire_unix)
+                .await
+            {
+                count += c;
+            }
+        }
+        count += self
+            .process_repeat_cron_due(queue_name, registry, now)
+            .await?;
+        Ok(count)
+    }
+
+    async fn materialize_repeat_line(
+        &self,
+        queue_name: &str,
+        registry: &JobRegistry,
+        schedule_id: &str,
+        fire_unix: i64,
+    ) -> Result<usize> {
+        let mut conn = self.async_conn.clone();
+        let hkey = self.repeat_hash_key(schedule_id);
+        let qn: Option<String> = conn
+            .hget(&hkey, "queue_name")
+            .await
+            .map_err(ChainMQError::Redis)?;
+        if let Some(ref q) = qn {
+            if q.as_str() != queue_name {
+                tracing::warn!(
+                    schedule_id,
+                    expected = queue_name,
+                    got = %q,
+                    "repeat hash queue_name mismatch"
+                );
+                return Ok(0);
+            }
+        }
+        let job_name: Option<String> = conn
+            .hget(&hkey, "job_name")
+            .await
+            .map_err(ChainMQError::Redis)?;
+        let payload_s: Option<String> = conn
+            .hget(&hkey, "payload")
+            .await
+            .map_err(ChainMQError::Redis)?;
+        let options_s: Option<String> = conn
+            .hget(&hkey, "options_json")
+            .await
+            .map_err(ChainMQError::Redis)?;
+        let Some(jn) = job_name else {
+            return Ok(0);
+        };
+        let payload: serde_json::Value = payload_s
+            .map(|s| serde_json::from_str(&s))
+            .transpose()
+            .map_err(ChainMQError::Serialization)?
+            .unwrap_or(serde_json::Value::Null);
+        let opts: JobOptions = options_s
+            .map(|s| serde_json::from_str(&s))
+            .transpose()
+            .map_err(ChainMQError::Serialization)?
+            .unwrap_or_default();
+        match registry.enqueue_by_name(self, &jn, payload, opts).await {
+            Ok(jid) => {
+                self.emit_queue_event(
+                    queue_name,
+                    "repeat_fired",
+                    Some(&jid),
+                    Some(serde_json::json!({ "scheduleId": schedule_id, "fireUnix": fire_unix })),
+                    None,
+                )
+                .await;
+                Ok(1)
+            }
+            Err(e) => {
+                tracing::error!(?e, schedule_id, "repeat materialize failed");
+                Ok(0)
+            }
+        }
+    }
+
+    async fn process_repeat_cron_due(
+        &self,
+        queue_name: &str,
+        registry: &JobRegistry,
+        now: i64,
+    ) -> Result<usize> {
+        let repeat_key = self.repeat_zset_key(queue_name);
+        let mut conn = self.async_conn.clone();
+        let raw: Vec<String> = redis::cmd("ZRANGEBYSCORE")
+            .arg(&repeat_key)
+            .arg("-inf")
+            .arg(now)
+            .arg("WITHSCORES")
+            .arg("LIMIT")
+            .arg(0i64)
+            .arg(100i64)
+            .query_async(&mut conn)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        let mut count = 0usize;
+        let mut i = 0usize;
+        while i + 1 < raw.len() {
+            let schedule_id = raw[i].clone();
+            let fire_unix: i64 = raw[i + 1].parse().unwrap_or(0);
+            i += 2;
+            let hkey = self.repeat_hash_key(&schedule_id);
+            let cron_expr: Option<String> = conn
+                .hget(&hkey, "cron_expr")
+                .await
+                .map_err(ChainMQError::Redis)?;
+            let cron_expr = match cron_expr.filter(|s| !s.is_empty()) {
+                Some(s) => s,
+                None => continue,
+            };
+            let interval_s: Option<String> = conn
+                .hget(&hkey, "interval_secs")
+                .await
+                .map_err(ChainMQError::Redis)?;
+            if interval_s.as_ref().is_some_and(|s| !s.is_empty()) {
+                continue;
+            }
+            let tick_key = self.repeat_tick_key(queue_name, &schedule_id, fire_unix);
+            let set_ok: Option<String> = redis::cmd("SET")
+                .arg(&tick_key)
+                .arg("1")
+                .arg("NX")
+                .arg("EX")
+                .arg(Self::REPEAT_PROMOTION_TICK_TTL_SECS)
+                .query_async(&mut conn)
+                .await
+                .map_err(ChainMQError::Redis)?;
+            if set_ok.is_none() {
+                continue;
+            }
+            let schedule = match CronSchedule::from_str(&cron_expr) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(?e, %cron_expr, "cron parse failed");
+                    continue;
+                }
+            };
+            let after = chrono::DateTime::from_timestamp(fire_unix, 0).unwrap_or_else(Utc::now);
+            let next_dt = schedule
+                .after(&after)
+                .next()
+                .unwrap_or(after + chrono::Duration::hours(1));
+            let _: () = conn
+                .zadd::<_, _, _, ()>(&repeat_key, &schedule_id, next_dt.timestamp())
+                .await
+                .map_err(ChainMQError::Redis)?;
+            if self
+                .materialize_repeat_line(queue_name, registry, &schedule_id, fire_unix)
+                .await?
+                == 1
+            {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     /// Claim next job for processing
     pub async fn claim_job(&self, queue_name: &str, worker_id: &str) -> Result<Option<JobId>> {
         let chain = self.claim_wait_key_chain(queue_name);
@@ -519,6 +925,8 @@ impl Queue {
             inv.key(k);
         }
         inv.key(&active_key);
+        let pause_key = self.paused_key(queue_name);
+        inv.arg(&pause_key);
         let result: Option<String> = inv.invoke_async(&mut self.async_conn.clone()).await?;
 
         match result {
@@ -1177,6 +1585,45 @@ impl Queue {
 
     fn delayed_key(&self, queue_name: &str) -> String {
         format!("{}:queue:{}:delayed", self.options.key_prefix, queue_name)
+    }
+
+    /// Redis key: when present (SET), [`Queue::claim_job`] does not take jobs from wait lists.
+    /// Matches BullMQ-style queue pause; [`Queue::process_delayed`] is unchanged while paused.
+    pub fn paused_key(&self, queue_name: &str) -> String {
+        format!("{}:queue:{}:paused", self.options.key_prefix, queue_name)
+    }
+
+    /// Pause the queue: workers will not claim new jobs from wait lists; enqueue and delayed promotion continue.
+    pub async fn pause_queue(&self, queue_name: &str) -> Result<()> {
+        let mut conn = self.async_conn.clone();
+        let key = self.paused_key(queue_name);
+        let _: () = redis::cmd("SET")
+            .arg(&key)
+            .arg("1")
+            .query_async(&mut conn)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        self.emit_queue_event(queue_name, "paused", None, None, None)
+            .await;
+        Ok(())
+    }
+
+    /// Resume the queue: workers may claim jobs again.
+    pub async fn resume_queue(&self, queue_name: &str) -> Result<()> {
+        let mut conn = self.async_conn.clone();
+        let key = self.paused_key(queue_name);
+        let _: () = conn.del(&key).await.map_err(ChainMQError::Redis)?;
+        self.emit_queue_event(queue_name, "resumed", None, None, None)
+            .await;
+        Ok(())
+    }
+
+    /// Returns `true` if the queue is paused ([`Self::pause_queue`]).
+    pub async fn is_queue_paused(&self, queue_name: &str) -> Result<bool> {
+        let mut conn = self.async_conn.clone();
+        let key = self.paused_key(queue_name);
+        let exists: bool = conn.exists(&key).await.map_err(ChainMQError::Redis)?;
+        Ok(exists)
     }
 
     fn failed_key(&self, queue_name: &str) -> String {

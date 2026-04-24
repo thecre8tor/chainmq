@@ -22,6 +22,8 @@ pub struct WorkerConfig {
     pub queue_options: QueueOptions,
     pub concurrency: usize,
     pub poll_interval: Duration,
+    /// How often to run [`Queue::process_repeat`] for the worker queue (same order of magnitude as delayed promotion).
+    pub repeat_poll_interval: Duration,
     pub stalled_job_check_interval: Duration,
     pub worker_id: String,
     pub shutdown_timeout: Duration,
@@ -37,6 +39,7 @@ impl Default for WorkerConfig {
             queue_options: QueueOptions::default(),
             concurrency: 10,
             poll_interval: Duration::from_millis(100),
+            repeat_poll_interval: Duration::from_secs(5),
             stalled_job_check_interval: Duration::from_secs(30),
             worker_id: format!("worker-{}", uuid::Uuid::new_v4()),
             shutdown_timeout: Duration::from_secs(30),
@@ -109,6 +112,11 @@ impl WorkerBuilder {
 
     pub fn with_poll_interval(mut self, interval: Duration) -> Self {
         self.config.poll_interval = interval;
+        self
+    }
+
+    pub fn with_repeat_poll_interval(mut self, interval: Duration) -> Self {
+        self.config.repeat_poll_interval = interval;
         self
     }
 
@@ -206,6 +214,10 @@ impl Worker {
         // Start delayed job processor
         let delayed_handle = self.spawn_delayed_processor().await;
         self.handles.push(delayed_handle);
+
+        // Start repeat (interval + cron) promotion
+        let repeat_handle = self.spawn_repeat_processor().await;
+        self.handles.push(repeat_handle);
 
         // Start stalled job checker
         let stalled_handle = self.spawn_stalled_checker().await;
@@ -444,6 +456,38 @@ impl Worker {
                     }
                     Err(e) => {
                         error!("Failed to process delayed jobs: {}", e);
+                    }
+                }
+            }
+        })
+    }
+
+    async fn spawn_repeat_processor(&self) -> JoinHandle<()> {
+        let queue = Arc::clone(&self.queue);
+        let registry = Arc::clone(&self.registry);
+        let queue_name = self.config.queue_options.name.clone();
+        let poll = self.config.repeat_poll_interval;
+        let is_shutting_down = Arc::clone(&self.is_shutting_down);
+
+        tokio::spawn(async move {
+            let mut interval = interval(poll);
+
+            loop {
+                if is_shutting_down.load(Ordering::SeqCst) {
+                    info!("Repeat processor stopping");
+                    break;
+                }
+
+                interval.tick().await;
+
+                match queue.process_repeat(&queue_name, registry.as_ref()).await {
+                    Ok(n) => {
+                        if n > 0 {
+                            info!("Promoted {} repeat tick(s)", n);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to process repeat jobs: {}", e);
                     }
                 }
             }

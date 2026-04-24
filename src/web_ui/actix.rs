@@ -22,19 +22,21 @@ fn map_http_status(s: http::StatusCode) -> actix_web::http::StatusCode {
 }
 use tokio::sync::Mutex;
 
-use crate::Queue;
+use crate::{JobRegistry, Queue};
 
 use super::core::{
-    self, CleanQueueRequest, DeleteJobRequest, JobLogsQuery, LoginRequest, SESSION_AUTH_KEY,
-    UiAssets, WebUIMountConfig, embedded_asset_rel_key, embedded_content_type,
-    is_ui_auth_public_route, json_reauth_value, normalize_static_url_prefix, session_cookie_path,
-    session_signing_key_material, verify_credentials,
+    self, AddRepeatCronRequest, AddRepeatIntervalRequest, CleanQueueRequest, DeleteJobRequest,
+    JobLogsQuery, LoginRequest, SESSION_AUTH_KEY, UiAssets, WebUIMountConfig,
+    embedded_asset_rel_key, embedded_content_type, is_ui_auth_public_route, json_reauth_value,
+    normalize_static_url_prefix, session_cookie_path, session_signing_key_material,
+    verify_credentials,
 };
 
 #[derive(Clone)]
 struct AppState {
     queue: Arc<Mutex<Queue>>,
     auth: Option<Arc<core::UiLoginRuntime>>,
+    job_registry: Option<Arc<JobRegistry>>,
 }
 
 /// Register dashboard routes on `cfg`. Call this from `App::configure`.
@@ -68,7 +70,11 @@ pub fn configure_chainmq_web_ui(
         None => None,
     };
 
-    let app_state = AppState { queue, auth };
+    let app_state = AppState {
+        queue,
+        auth,
+        job_registry: config.job_registry.clone(),
+    };
 
     let session_key = Key::from(&session_signing_key_material(&config)[..]);
     let cookie_path = session_cookie_path(&config.ui_path);
@@ -140,6 +146,38 @@ pub fn configure_chainmq_web_ui(
             .route(
                 "/queues/{queue_name}/process-delayed",
                 web::post().to(process_delayed_actix),
+            )
+            .route(
+                "/queues/{queue_name}/process-repeat",
+                web::post().to(process_repeat_actix),
+            )
+            .route(
+                "/queues/{queue_name}/paused",
+                web::get().to(queue_paused_actix),
+            )
+            .route(
+                "/queues/{queue_name}/pause",
+                web::post().to(pause_queue_actix),
+            )
+            .route(
+                "/queues/{queue_name}/resume",
+                web::post().to(resume_queue_actix),
+            )
+            .route(
+                "/queues/{queue_name}/repeats",
+                web::get().to(list_repeats_actix),
+            )
+            .route(
+                "/queues/{queue_name}/repeats/interval",
+                web::post().to(add_repeat_interval_actix),
+            )
+            .route(
+                "/queues/{queue_name}/repeats/cron",
+                web::post().to(add_repeat_cron_actix),
+            )
+            .route(
+                "/queues/{queue_name}/repeats/{schedule_id}",
+                web::delete().to(remove_repeat_actix),
             ),
     );
 
@@ -434,6 +472,89 @@ async fn process_delayed_actix(
     let queue_name = path.into_inner();
     let q = state.queue.lock().await;
     let (st, json) = core::api_process_delayed(&*q, &queue_name).await;
+    Ok(HttpResponse::build(map_http_status(st)).json(json))
+}
+
+async fn process_repeat_actix(
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+) -> ActixResult<HttpResponse> {
+    let queue_name = path.into_inner();
+    let q = state.queue.lock().await;
+    let reg = state.job_registry.as_deref();
+    let (st, json) = core::api_process_repeat(&*q, &queue_name, reg).await;
+    Ok(HttpResponse::build(map_http_status(st)).json(json))
+}
+
+async fn queue_paused_actix(
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+) -> ActixResult<HttpResponse> {
+    let queue_name = path.into_inner();
+    let q = state.queue.lock().await;
+    let (st, json) = core::api_queue_paused(&*q, &queue_name).await;
+    Ok(HttpResponse::build(map_http_status(st)).json(json))
+}
+
+async fn pause_queue_actix(
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+) -> ActixResult<HttpResponse> {
+    let queue_name = path.into_inner();
+    let q = state.queue.lock().await;
+    let (st, json) = core::api_pause_queue(&*q, &queue_name).await;
+    Ok(HttpResponse::build(map_http_status(st)).json(json))
+}
+
+async fn resume_queue_actix(
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+) -> ActixResult<HttpResponse> {
+    let queue_name = path.into_inner();
+    let q = state.queue.lock().await;
+    let (st, json) = core::api_resume_queue(&*q, &queue_name).await;
+    Ok(HttpResponse::build(map_http_status(st)).json(json))
+}
+
+async fn list_repeats_actix(
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+) -> ActixResult<HttpResponse> {
+    let queue_name = path.into_inner();
+    let q = state.queue.lock().await;
+    let (st, json) = core::api_list_repeats(&*q, &queue_name).await;
+    Ok(HttpResponse::build(map_http_status(st)).json(json))
+}
+
+async fn add_repeat_interval_actix(
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+    body: web::Json<AddRepeatIntervalRequest>,
+) -> ActixResult<HttpResponse> {
+    let queue_name = path.into_inner();
+    let q = state.queue.lock().await;
+    let (st, json) = core::api_add_repeat_interval(&*q, &queue_name, body.into_inner()).await;
+    Ok(HttpResponse::build(map_http_status(st)).json(json))
+}
+
+async fn add_repeat_cron_actix(
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+    body: web::Json<AddRepeatCronRequest>,
+) -> ActixResult<HttpResponse> {
+    let queue_name = path.into_inner();
+    let q = state.queue.lock().await;
+    let (st, json) = core::api_add_repeat_cron(&*q, &queue_name, body.into_inner()).await;
+    Ok(HttpResponse::build(map_http_status(st)).json(json))
+}
+
+async fn remove_repeat_actix(
+    state: web::Data<AppState>,
+    path: web::Path<(String, String)>,
+) -> ActixResult<HttpResponse> {
+    let (queue_name, schedule_id) = path.into_inner();
+    let q = state.queue.lock().await;
+    let (st, json) = core::api_remove_repeat(&*q, &queue_name, &schedule_id).await;
     Ok(HttpResponse::build(map_http_status(st)).json(json))
 }
 

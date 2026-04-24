@@ -1,6 +1,12 @@
 -- lua/claim_job.lua
 -- Atomically claim a job from waiting queues (priority + FIFO/LIFO buckets, then legacy wait) and move to active.
 -- KEYS[1..n-1] = wait lists in claim order (RPOP from each), KEYS[n] = active_key
+-- ARGV[1] = pause_key (full Redis key). If key exists (SET by pause_queue), return nil without claiming.
+
+local pause_key = ARGV[1]
+if pause_key and pause_key ~= '' and redis.call('exists', pause_key) == 1 then
+    return nil
+end
 
 local n = #KEYS
 local active_key = KEYS[n]

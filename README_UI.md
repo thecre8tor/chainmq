@@ -10,7 +10,7 @@ The library **does not start an HTTP server**. You choose the host, port, and TL
 - 📊 Real-time queue statistics
 - 🔍 Job search and filtering
 - 📄 Pagination for large job lists
-- ⚡ Queue actions (clean, recover stalled, process delayed)
+- ⚡ Queue actions (clean, recover stalled, process delayed, **process repeat**, **pause / resume** queue)
 - 🔄 Auto-refresh every 3 seconds
 - 📱 Responsive design
 - 📜 Per-job **Activity** tab (queue events stream; see [Lifecycle events](#lifecycle-events))
@@ -90,6 +90,12 @@ async fn main() -> std::io::Result<()> {
 If [`WebUIMountConfig::ui_path`](https://docs.rs/chainmq/latest/chainmq/struct.WebUIMountConfig.html) is `"/"`, **merge** the router at the root of your app instead of nesting (avoid path clashes with your other routes).
 
 For a runnable example, see [`examples/web_ui.rs`](./examples/web_ui.rs).
+
+### Repeat schedules, process repeat, and queue pause
+
+- **Pause / resume:** toolbar buttons call `POST …/api/queues/{queue}/pause` and `…/resume`; the UI refreshes paused state from `GET …/paused`.
+- **Process repeat:** runs `POST …/api/queues/{queue}/process-repeat`, which calls [`Queue::process_repeat`](https://docs.rs/chainmq/latest/chainmq/struct.Queue.html#method.process_repeat). That path needs a [`JobRegistry`](https://docs.rs/chainmq/latest/chainmq/struct.JobRegistry.html) to deserialize jobs by name — set [`WebUIMountConfig::job_registry`](https://docs.rs/chainmq/latest/chainmq/struct.WebUIMountConfig.html#structfield.job_registry) to `Some(Arc::new(reg))` after registering the same job types your worker uses. If it is `None`, the API returns **503** with an explanatory JSON error.
+- **List / add / remove repeats:** `GET …/repeats`, `POST …/repeats/interval`, `POST …/repeats/cron`, `DELETE …/repeats/{schedule_id}` (see [`AddRepeatIntervalRequest`](https://docs.rs/chainmq/latest/chainmq/struct.AddRepeatIntervalRequest.html) / [`AddRepeatCronRequest`](https://docs.rs/chainmq/latest/chainmq/struct.AddRepeatCronRequest.html) in the crate docs). You can drive these from your own tools; the bundled UI currently exposes pause, resume, and **Process repeat** on the queue toolbar.
 
 ### 3. Actix: `configure`
 

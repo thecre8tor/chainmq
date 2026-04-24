@@ -7,8 +7,8 @@
 //! With Redis at `REDIS_URL` or default `redis://127.0.0.1:6379`.
 use async_trait::async_trait;
 use chainmq::{
-    ChainMQError, Job, JobContext, JobId, JobLogLine, JobMetadata, JobOptions, JobState, Priority,
-    Queue, QueueOptions, RedisClient, Result,
+    ChainMQError, Job, JobContext, JobId, JobLogLine, JobMetadata, JobOptions, JobRegistry,
+    JobState, Priority, Queue, QueueOptions, RedisClient, RepeatCatchUp, Result,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -159,10 +159,7 @@ async fn enqueue_custom_string_job_id_claim_roundtrip() {
         .expect("enqueue");
     assert_eq!(id.0, "external-ref-2026-04");
 
-    let claimed = queue
-        .claim_job("integration_q", "w1")
-        .await
-        .expect("claim");
+    let claimed = queue.claim_job("integration_q", "w1").await.expect("claim");
     assert_eq!(
         claimed.as_ref().map(|j| j.0.as_str()),
         Some("external-ref-2026-04")
@@ -276,6 +273,49 @@ async fn process_delayed_moves_to_waiting() {
 
     let m = queue.get_job(&id).await.expect("get").expect("some");
     assert_eq!(m.state, JobState::Waiting);
+}
+
+#[tokio::test]
+#[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
+async fn queue_pause_blocks_claim_but_delayed_still_promotes() {
+    let queue = Queue::new(opts()).await.expect("queue new");
+    let id = queue.enqueue(TestJob { v: 7 }).await.expect("enqueue");
+
+    queue.pause_queue("integration_q").await.expect("pause");
+    assert!(queue.is_queue_paused("integration_q").await.expect("is"));
+
+    let claimed = queue
+        .claim_job("integration_q", "w")
+        .await
+        .expect("claim while paused");
+    assert_eq!(claimed, None);
+
+    let mut jo = JobOptions::default();
+    jo.delay_secs = Some(0);
+    let delayed_id = queue
+        .enqueue_with_options(TestJob { v: 8 }, jo)
+        .await
+        .expect("enqueue delayed");
+    let n = queue
+        .process_delayed("integration_q")
+        .await
+        .expect("process_delayed while paused");
+    assert!(n >= 1);
+    let dm = queue
+        .get_job(&delayed_id)
+        .await
+        .expect("get")
+        .expect("delayed job waiting");
+    assert_eq!(dm.state, JobState::Waiting);
+
+    queue.resume_queue("integration_q").await.expect("resume");
+    assert!(!queue.is_queue_paused("integration_q").await.expect("is"));
+
+    let claimed2 = queue
+        .claim_job("integration_q", "w")
+        .await
+        .expect("claim after resume");
+    assert_eq!(claimed2, Some(id));
 }
 
 #[tokio::test]
@@ -518,4 +558,183 @@ async fn lifecycle_events_in_stream() {
             .any(|e| e["type"] == "removed" && e["jobId"] == id2.to_string()),
         "expected removed event, got {ev4:?}"
     );
+}
+
+fn test_registry() -> JobRegistry {
+    let mut reg = JobRegistry::new();
+    reg.register::<TestJob>();
+    reg
+}
+
+#[tokio::test]
+#[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
+async fn repeat_interval_process_repeat_enqueues() {
+    let reg = test_registry();
+    let queue = Queue::new(opts()).await.expect("queue new");
+    let sid = "repeat-int-1";
+    queue
+        .upsert_repeat_interval(
+            "integration_q",
+            sid,
+            "TestJob",
+            serde_json::to_value(TestJob { v: 55 }).expect("payload"),
+            JobOptions::default(),
+            120,
+            true,
+            RepeatCatchUp::One,
+            Some(0),
+        )
+        .await
+        .expect("upsert repeat");
+
+    let n = queue
+        .process_repeat("integration_q", &reg)
+        .await
+        .expect("process_repeat");
+    assert!(n >= 1, "expected at least one promotion");
+
+    let waiting = queue
+        .list_jobs("integration_q", JobState::Waiting, Some(50))
+        .await
+        .expect("list");
+    assert!(
+        waiting
+            .iter()
+            .any(|m| m.name == "TestJob" && m.payload["v"] == 55),
+        "expected materialized TestJob, got {:?}",
+        waiting
+    );
+
+    queue
+        .remove_repeat("integration_q", sid)
+        .await
+        .expect("remove");
+}
+
+#[tokio::test]
+#[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
+async fn repeat_interval_concurrent_process_at_most_one_job() {
+    let reg = Arc::new(test_registry());
+    let queue = Arc::new(Queue::new(opts()).await.expect("queue new"));
+    let sid = "repeat-int-conc";
+    queue
+        .upsert_repeat_interval(
+            "integration_q",
+            sid,
+            "TestJob",
+            serde_json::to_value(TestJob { v: 77 }).expect("payload"),
+            JobOptions::default(),
+            120,
+            true,
+            RepeatCatchUp::One,
+            Some(0),
+        )
+        .await
+        .expect("upsert");
+
+    let q1 = Arc::clone(&queue);
+    let q2 = Arc::clone(&queue);
+    let r1 = Arc::clone(&reg);
+    let r2 = Arc::clone(&reg);
+    let (a, b) = tokio::join!(
+        q1.process_repeat("integration_q", r1.as_ref()),
+        q2.process_repeat("integration_q", r2.as_ref()),
+    );
+    a.expect("p1");
+    b.expect("p2");
+
+    let waiting = queue
+        .list_jobs("integration_q", JobState::Waiting, Some(100))
+        .await
+        .expect("list");
+    let from_repeat: Vec<_> = waiting
+        .iter()
+        .filter(|m| m.name == "TestJob" && m.payload["v"] == 77)
+        .collect();
+    assert!(
+        from_repeat.len() <= 1,
+        "expected at most one repeat materialization, got {}",
+        from_repeat.len()
+    );
+
+    queue
+        .remove_repeat("integration_q", sid)
+        .await
+        .expect("remove");
+}
+
+#[tokio::test]
+#[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
+async fn repeat_while_queue_paused_skips_materialize() {
+    let reg = test_registry();
+    let queue = Queue::new(opts()).await.expect("queue new");
+    queue.pause_queue("integration_q").await.expect("pause");
+    let sid = "repeat-paused-1";
+    queue
+        .upsert_repeat_interval(
+            "integration_q",
+            sid,
+            "TestJob",
+            serde_json::to_value(TestJob { v: 88 }).expect("payload"),
+            JobOptions::default(),
+            1,
+            true,
+            RepeatCatchUp::One,
+            Some(0),
+        )
+        .await
+        .expect("upsert");
+
+    let n = queue
+        .process_repeat("integration_q", &reg)
+        .await
+        .expect("process_repeat");
+    assert_eq!(n, 0);
+
+    let waiting = queue
+        .list_jobs("integration_q", JobState::Waiting, Some(50))
+        .await
+        .expect("list");
+    assert!(!waiting.iter().any(|m| m.payload["v"] == 88));
+
+    queue.resume_queue("integration_q").await.expect("resume");
+    let n2 = queue
+        .process_repeat("integration_q", &reg)
+        .await
+        .expect("process_repeat after resume");
+    assert!(n2 >= 1);
+
+    queue
+        .remove_repeat("integration_q", sid)
+        .await
+        .expect("remove");
+}
+
+#[tokio::test]
+#[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
+async fn repeat_cron_upsert_list_roundtrip() {
+    let queue = Queue::new(opts()).await.expect("queue new");
+    let sid = "repeat-cron-1";
+    queue
+        .upsert_repeat_cron(
+            "integration_q",
+            sid,
+            "TestJob",
+            "0 * * * * *",
+            serde_json::to_value(TestJob { v: 3 }).expect("payload"),
+            JobOptions::default(),
+            true,
+        )
+        .await
+        .expect("upsert cron");
+
+    let list = queue.list_repeats("integration_q").await.expect("list");
+    let row = list.iter().find(|r| r.schedule_id == sid).expect("row");
+    assert_eq!(row.cron_expr.as_deref(), Some("0 * * * * *"));
+    assert!(row.interval_secs.is_none());
+
+    queue
+        .remove_repeat("integration_q", sid)
+        .await
+        .expect("remove");
 }

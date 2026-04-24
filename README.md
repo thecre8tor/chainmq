@@ -12,6 +12,8 @@ This crate is library-first. Runnable examples demonstrate typical patterns (sin
 - 🔧 Worker Management: Configurable workers with lifecycle management
 - ⚡ Async/Await: Full async support throughout the system
 - ⏰ Delayed jobs: Schedule jobs for future execution with atomic operations
+- ⏸️ Queue-level pause (BullMQ-style): [`Queue::pause_queue`](https://docs.rs/chainmq/latest/chainmq/struct.Queue.html#method.pause_queue) / [`resume_queue`](https://docs.rs/chainmq/latest/chainmq/struct.Queue.html#method.resume_queue) — workers skip claims while enqueue and delayed promotion continue
+- 🔁 Repeatable jobs: interval and cron (`cron` crate) schedules in Redis; [`Queue::process_repeat`](https://docs.rs/chainmq/latest/chainmq/struct.Queue.html#method.process_repeat) + worker poll; see [docs/repeatables-cron-design.md](docs/repeatables-cron-design.md)
 - 🗄️ Backoff strategies: Configurable retry logic for failed jobs
 - 📊 Application Context: Share application state across jobs
 - 🖥️ Web UI: Dashboard for monitoring and managing queues (one server sees every logical queue under the same Redis `key_prefix`; see [README_UI.md](./README_UI.md))

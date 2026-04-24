@@ -14,9 +14,9 @@ mod actix;
 
 #[cfg(feature = "web-ui-core")]
 pub use core::{
-    WebUIAuth, WebUIMountConfig, embedded_asset_rel_key, embedded_content_type,
-    full_path_for_embedded_request, is_ui_auth_public_route, normalize_static_url_prefix,
-    session_cookie_path,
+    AddRepeatCronRequest, AddRepeatIntervalRequest, WebUIAuth, WebUIMountConfig,
+    embedded_asset_rel_key, embedded_content_type, full_path_for_embedded_request,
+    is_ui_auth_public_route, normalize_static_url_prefix, session_cookie_path,
 };
 
 #[cfg(feature = "web-ui-axum")]
@@ -33,6 +33,7 @@ mod core_tests {
     fn default_mount_config_enables_auth_with_chainmq_credentials() {
         let c = WebUIMountConfig::default();
         assert!(c.auth.is_some());
+        assert!(c.job_registry.is_none());
         let a = c.auth.expect("auth");
         assert_eq!(a.username, "ChainMQ");
         assert_eq!(a.password, "ChainMQ");

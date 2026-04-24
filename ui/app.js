@@ -1290,6 +1290,11 @@ function setupEventListeners() {
   document
     .getElementById("processDelayedBtn")
     .addEventListener("click", processDelayed);
+  document
+    .getElementById("processRepeatBtn")
+    ?.addEventListener("click", processRepeat);
+  document.getElementById("pauseQueueBtn")?.addEventListener("click", pauseQueue);
+  document.getElementById("resumeQueueBtn")?.addEventListener("click", resumeQueue);
   document.getElementById("redisStatsBtn")?.addEventListener("click", () => {
     openRedisStatsModal();
   });
@@ -1688,8 +1693,24 @@ async function loadQueueStats() {
 
     // Update sidebar stats
     loadQueueStatsForSidebar(currentQueue);
+    await refreshQueuePausedUi();
   } catch (error) {
     console.error("Failed to load queue stats:", error);
+  }
+}
+
+async function refreshQueuePausedUi() {
+  if (!currentQueue) return;
+  try {
+    const response = await apiFetch(`queues/${currentQueue}/paused`);
+    const data = await response.json();
+    const paused = data.paused === true;
+    const pauseBtn = document.getElementById("pauseQueueBtn");
+    const resumeBtn = document.getElementById("resumeQueueBtn");
+    if (pauseBtn) pauseBtn.disabled = paused;
+    if (resumeBtn) resumeBtn.disabled = !paused;
+  } catch (e) {
+    console.warn("Could not load queue paused state", e);
   }
 }
 
@@ -2550,6 +2571,71 @@ async function processDelayed() {
     }
   } catch (error) {
     alert("Failed to process delayed jobs: " + error.message);
+  }
+}
+
+async function processRepeat() {
+  if (!currentQueue) return;
+  if (
+    !confirm(
+      `Process repeat schedules for ${currentQueue}? Requires the server to set WebUIMountConfig.job_registry.`,
+    )
+  ) {
+    return;
+  }
+  try {
+    const response = await apiFetch(`queues/${currentQueue}/process-repeat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    const data = await response.json();
+    if (response.ok) {
+      alert(
+        `Promoted ${data.promoted_count ?? 0} repeat tick(s).`,
+      );
+      loadQueueStats();
+      loadJobs();
+    } else {
+      alert("Failed: " + (data.error || "Unknown error"));
+    }
+  } catch (error) {
+    alert("Failed to process repeat: " + error.message);
+  }
+}
+
+async function pauseQueue() {
+  if (!currentQueue) return;
+  try {
+    const response = await apiFetch(`queues/${currentQueue}/pause`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    const data = await response.json();
+    if (response.ok) {
+      await refreshQueuePausedUi();
+    } else {
+      alert("Pause failed: " + (data.error || "Unknown error"));
+    }
+  } catch (e) {
+    alert("Pause failed: " + e.message);
+  }
+}
+
+async function resumeQueue() {
+  if (!currentQueue) return;
+  try {
+    const response = await apiFetch(`queues/${currentQueue}/resume`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    const data = await response.json();
+    if (response.ok) {
+      await refreshQueuePausedUi();
+    } else {
+      alert("Resume failed: " + (data.error || "Unknown error"));
+    }
+  } catch (e) {
+    alert("Resume failed: " + e.message);
   }
 }
 
