@@ -39,13 +39,13 @@ Smaller builds without any dashboard:
 
 ```toml
 [dependencies]
-chainmq = { version = "1.2.0", default-features = false }
+chainmq = { version = "1.2.1", default-features = false }
 ```
 
 Actix-only consumers:
 
 ```toml
-chainmq = { version = "1.2.0", default-features = false, features = ["web-ui-actix"] }
+chainmq = { version = "1.2.1", default-features = false, features = ["web-ui-actix"] }
 ```
 
 ### 2. Axum: mount the router
