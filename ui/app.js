@@ -68,6 +68,20 @@ function coerceTimestampMs(v) {
   return n < 1e12 ? n * 1000 : n;
 }
 
+/** Locale date+time with milliseconds (for activity + job tables). @param {number} tsMs */
+function formatLocaleDateTimeWithMillis(tsMs) {
+  if (!Number.isFinite(tsMs)) return "—";
+  return new Date(tsMs).toLocaleString(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    fractionalSecondDigits: 3,
+  });
+}
+
 function humanizeActivityEventType(typeRaw) {
   const t = String(typeRaw || "event");
   const labels = {
@@ -132,7 +146,7 @@ function delayedEventScheduleLocale(ev) {
   if (data == null || typeof data !== "object" || Array.isArray(data)) return null;
   const exMs = coerceTimestampMs(data.executeAt);
   if (exMs == null) return null;
-  return new Date(exMs).toLocaleString();
+  return formatLocaleDateTimeWithMillis(exMs);
 }
 
 /**
@@ -141,7 +155,7 @@ function delayedEventScheduleLocale(ev) {
  */
 function activityStampBlock(ev, typeLc) {
   const ts = ev.ts != null && Number.isFinite(Number(ev.ts)) ? Number(ev.ts) : null;
-  const loggedStr = ts != null ? new Date(ts).toLocaleString() : null;
+  const loggedStr = ts != null ? formatLocaleDateTimeWithMillis(ts) : null;
   const sched = typeLc === "delayed" ? delayedEventScheduleLocale(ev) : null;
 
   if (sched != null) {
@@ -171,7 +185,7 @@ function formatJobActivityMetaChips(ev, typeLc) {
     const ex = data.executeAt;
     const exMs = coerceTimestampMs(ex);
     if (exMs != null) {
-      const loc = new Date(exMs).toLocaleString();
+      const loc = formatLocaleDateTimeWithMillis(exMs);
       // Delayed: schedule is shown in the title (date before "Delayed"); skip duplicate chip.
       if (typeLc !== "delayed") {
         chips.push(
@@ -212,7 +226,7 @@ function formatJobActivityEventRow(ev) {
   const kindLabel = humanizeActivityEventType(typeRaw);
   const { context, stamp, stampTitle } = activityStampBlock(ev, typeLc);
   const ts = ev.ts != null && Number.isFinite(Number(ev.ts)) ? Number(ev.ts) : null;
-  const abs = ts != null ? new Date(ts).toLocaleString() : "—";
+  const abs = ts != null ? formatLocaleDateTimeWithMillis(ts) : "—";
   const rel = ts != null ? formatActivityRelativeMs(ts) : "—";
   const iso = ts != null ? new Date(ts).toISOString() : "";
   const stampBlock =
@@ -607,6 +621,7 @@ function formatClockFromIso(iso) {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
+    fractionalSecondDigits: 3,
   });
 }
 
@@ -622,6 +637,7 @@ function formatLifecycleWhen(iso) {
     hour: "numeric",
     minute: "2-digit",
     second: "2-digit",
+    fractionalSecondDigits: 3,
   });
 }
 
@@ -1753,7 +1769,9 @@ function renderJobs() {
 }
 
 function createJobRow(job) {
-  const created = new Date(job.created_at).toLocaleString();
+  const created = formatLocaleDateTimeWithMillis(
+    new Date(job.created_at).getTime(),
+  );
   const stateClass = job.state.toLowerCase();
 
   // For delayed jobs, show when they'll execute
@@ -1761,14 +1779,13 @@ function createJobRow(job) {
   if (job.state === "Delayed" && job.options.delay_secs != null) {
     const executeAtMs =
       new Date(job.created_at).getTime() + Number(job.options.delay_secs) * 1000;
-    const executeAt = new Date(executeAtMs);
     const { text: initialCd, variant: initialVariant } =
       formatDelayCountdown(executeAtMs);
     const cdColor =
       initialVariant === "overdue" || initialVariant === "soon"
         ? "var(--warning-color)"
         : "var(--primary-color)";
-    timeInfo = `<div>${created}</div><div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">Executes: ${executeAt.toLocaleString()}</div><div class="job-delay-countdown" data-execute-at-ms="${executeAtMs}" style="font-size: 13px; font-weight: 600; margin-top: 6px; color: ${cdColor};" aria-live="polite">${initialCd}</div>`;
+    timeInfo = `<div>${created}</div><div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">Executes: ${formatLocaleDateTimeWithMillis(executeAtMs)}</div><div class="job-delay-countdown" data-execute-at-ms="${executeAtMs}" style="font-size: 13px; font-weight: 600; margin-top: 6px; color: ${cdColor};" aria-live="polite">${initialCd}</div>`;
   } else if (job.state === "Active" && job.started_at) {
     // For active jobs, show how long they've been running
     const started = new Date(job.started_at);
@@ -1785,7 +1802,7 @@ function createJobRow(job) {
       elapsedStr = `<span style="color: var(--danger-color); font-weight: 600;">${elapsedStr} (STALLED)</span>`;
     }
 
-    timeInfo = `<div>${started.toLocaleString()}</div><div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">Running: ${elapsedStr} / ${timeoutMins}m timeout</div>`;
+    timeInfo = `<div>${formatLocaleDateTimeWithMillis(started.getTime())}</div><div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">Running: ${elapsedStr} / ${timeoutMins}m timeout</div>`;
   }
 
   const isSelected = selectedJobIds.has(job.id);

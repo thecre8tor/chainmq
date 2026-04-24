@@ -299,9 +299,7 @@ pub async fn api_list_queue_events(
     }
 }
 
-pub async fn api_get_redis_server_stats(
-    queue: &Queue,
-) -> (http::StatusCode, serde_json::Value) {
+pub async fn api_get_redis_server_stats(queue: &Queue) -> (http::StatusCode, serde_json::Value) {
     match queue.redis_server_metrics_json().await {
         Ok(v) => (http::StatusCode::OK, v),
         Err(e) => (
@@ -347,6 +345,16 @@ pub fn parse_job_state(state_str: &str) -> Result<JobState, serde_json::Value> {
     }
 }
 
+/// Build [`crate::JobId`] from a URL path segment (percent-decoded by the framework).
+fn job_id_from_path(raw: &str) -> Result<crate::JobId, &'static str> {
+    let t = raw.trim();
+    if t.is_empty() {
+        Err("job id must not be empty")
+    } else {
+        Ok(crate::JobId(t.to_string()))
+    }
+}
+
 pub async fn api_list_jobs(
     queue: &Queue,
     queue_name: &str,
@@ -370,13 +378,15 @@ pub async fn api_list_jobs(
 }
 
 pub async fn api_get_job(queue: &Queue, job_id_str: &str) -> (http::StatusCode, serde_json::Value) {
-    let Ok(uuid) = job_id_str.parse::<uuid::Uuid>() else {
-        return (
-            http::StatusCode::BAD_REQUEST,
-            serde_json::json!({ "error": "Invalid job ID format" }),
-        );
+    let job_id = match job_id_from_path(job_id_str) {
+        Ok(id) => id,
+        Err(msg) => {
+            return (
+                http::StatusCode::BAD_REQUEST,
+                serde_json::json!({ "error": msg }),
+            );
+        }
     };
-    let job_id = crate::JobId(uuid);
     match queue.get_job(&job_id).await {
         Ok(Some(job)) => (
             http::StatusCode::OK,
@@ -398,12 +408,12 @@ pub async fn api_get_job_logs(
     job_id_str: &str,
     limit: usize,
 ) -> (http::StatusCode, serde_json::Value) {
-    let job_id = match job_id_str.parse::<uuid::Uuid>() {
-        Ok(uuid) => crate::JobId(uuid),
-        Err(_) => {
+    let job_id = match job_id_from_path(job_id_str) {
+        Ok(id) => id,
+        Err(msg) => {
             return (
                 http::StatusCode::BAD_REQUEST,
-                serde_json::json!({ "error": "Invalid job ID format" }),
+                serde_json::json!({ "error": msg }),
             );
         }
     };
@@ -434,13 +444,15 @@ pub async fn api_retry_job(
     job_id_str: &str,
     queue_name: &str,
 ) -> (http::StatusCode, serde_json::Value) {
-    let Ok(uuid) = job_id_str.parse::<uuid::Uuid>() else {
-        return (
-            http::StatusCode::BAD_REQUEST,
-            serde_json::json!({ "error": "Invalid job ID format" }),
-        );
+    let job_id = match job_id_from_path(job_id_str) {
+        Ok(id) => id,
+        Err(msg) => {
+            return (
+                http::StatusCode::BAD_REQUEST,
+                serde_json::json!({ "error": msg }),
+            );
+        }
     };
-    let job_id = crate::JobId(uuid);
     match queue.retry_job(&job_id, queue_name).await {
         Ok(()) => (
             http::StatusCode::OK,
@@ -461,13 +473,15 @@ pub async fn api_delete_job(
     job_id_str: &str,
     queue_name: &str,
 ) -> (http::StatusCode, serde_json::Value) {
-    let Ok(uuid) = job_id_str.parse::<uuid::Uuid>() else {
-        return (
-            http::StatusCode::BAD_REQUEST,
-            serde_json::json!({ "error": "Invalid job ID format" }),
-        );
+    let job_id = match job_id_from_path(job_id_str) {
+        Ok(id) => id,
+        Err(msg) => {
+            return (
+                http::StatusCode::BAD_REQUEST,
+                serde_json::json!({ "error": msg }),
+            );
+        }
     };
-    let job_id = crate::JobId(uuid);
     match queue.delete_job(&job_id, queue_name).await {
         Ok(()) => (
             http::StatusCode::OK,

@@ -2,21 +2,25 @@
 use crate::{JobContext, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-/// Unique identifier for a job
+/// Unique identifier for a job (any non-empty string; auto-generated ids are UUID strings).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct JobId(pub Uuid);
+#[serde(transparent)]
+pub struct JobId(pub String);
 
 impl JobId {
     pub fn new() -> Self {
-        Self(Uuid::new_v4())
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    pub fn from_string(s: String) -> Self {
+        Self(s)
     }
 }
 
 impl std::fmt::Display for JobId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        f.write_str(&self.0)
     }
 }
 
@@ -64,7 +68,7 @@ pub enum JobState {
 /// Job execution options
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobOptions {
-    /// If set, this id is used for the new job; if unset, a random id is generated.
+    /// If set, this id is used for the new job (any non-empty string); if unset, a random UUID string is generated.
     /// Enqueue fails with [`crate::ChainMQError::DuplicateJobId`] if a job already exists
     /// for this id (see [`crate::Queue::enqueue_with_options`]). Not stored in job metadata.
     #[serde(default)]

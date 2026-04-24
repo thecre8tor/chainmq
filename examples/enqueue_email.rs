@@ -1,11 +1,11 @@
 use std::net::SocketAddr;
 
 use axum::Router;
-use chainmq::RedisClient;
 use chainmq::{
     Job, JobContext, JobOptions, Priority, Queue, QueueOptions, Result, WebUIMountConfig,
     async_trait, chainmq_dashboard_router, serde_json::json,
 };
+use chainmq::{JobId, RedisClient};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -48,10 +48,9 @@ async fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
     let queue = Queue::new(options).await?;
-    let queue_name = EmailJob::queue_name();
     println!(
         "[enqueue] Connected to Redis and initialized queue '{}'.",
-        queue_name
+        EmailJob::queue_name()
     );
 
     let job = EmailJob {
@@ -69,31 +68,28 @@ async fn main() -> anyhow::Result<()> {
         body: "Please read".into(),
     };
 
-    let response = json!({
-        "status": "sent",
-        "to": &urgent.to,
-        "subject": &urgent.subject,
-    });
-
     let opts = JobOptions {
         delay_secs: Some(60),
-        priority: Priority::High,
+        priority: Priority::Normal,
         attempts: 5,
+        job_id: Some(JobId::from_string(format!(
+            "CHAIN-UNIQUE-{}",
+            uuid::Uuid::new_v4()
+        ))),
         ..Default::default()
     };
 
-    println!("[enqueue] Enqueuing delayed/high-priority EmailJob (delay=60s, attempts=5)...");
+    println!("[enqueue] Enqueuing delayed EmailJob (delay=60s, attempts=5)...");
     let job_id2 = queue.enqueue_with_options(urgent, opts).await?;
     println!(
-        "[enqueue] Enqueued delayed EmailJob with id={} — done.",
+        "[enqueue] Enqueued delayed EmailJob with id={} — it stays in Delayed until a worker promotes due jobs, then runs perform.",
         job_id2
     );
 
-    let _ = queue
-        .complete_job(&job_id2, queue_name, Some(response))
-        .await?;
-
     println!("\n[enqueue] Jobs have been enqueued!");
+    println!(
+        "[enqueue] Tip: run a worker (see examples) so delayed jobs move to waiting after 60s and complete via perform — do not call complete_job on a delayed job from the producer unless you intend to skip execution."
+    );
 
     let mount = WebUIMountConfig {
         ui_path: "/dashboard".to_string(),

@@ -81,10 +81,7 @@ impl Queue {
     }
 
     fn events_stream_key(&self, queue_name: &str) -> String {
-        format!(
-            "{}:events:{}:stream",
-            self.options.key_prefix, queue_name
-        )
+        format!("{}:events:{}:stream", self.options.key_prefix, queue_name)
     }
 
     /// Redis pub/sub channel for this logical queue (same payload as the events stream).
@@ -373,11 +370,16 @@ impl Queue {
 
     /// Enqueue a job with custom options.
     ///
-    /// If [`JobOptions::job_id`] is set, that id is used; otherwise a new UUID is generated.
+    /// If [`JobOptions::job_id`] is set, that id is used; otherwise a new id (UUID string) is generated.
     /// If a job hash already has `metadata` for that id, returns [`ChainMQError::DuplicateJobId`]
     /// (atomic via Redis `HSETNX`). After [`Queue::delete_job`], the same id may be enqueued again.
     pub async fn enqueue_with_options<T: Job>(&self, job: T, options: JobOptions) -> Result<JobId> {
         let job_id = options.job_id.clone().unwrap_or_else(JobId::new);
+        if job_id.0.is_empty() {
+            return Err(ChainMQError::InvalidJobId(
+                "job id must not be empty".into(),
+            ));
+        }
         let now = Utc::now();
 
         let mut stored_options = options.clone();
@@ -493,23 +495,15 @@ impl Queue {
 
         let ids: Vec<&str> = result_str.split(',').filter(|s| !s.is_empty()).collect();
         for id_str in &ids {
-            if let Ok(uuid) = id_str.parse::<uuid::Uuid>() {
-                let job_id = JobId(uuid);
-                if let Some(mut metadata) = self.get_job(&job_id).await?
-                    && metadata.state != JobState::Waiting
-                {
-                    metadata.state = JobState::Waiting;
-                    self.save_job_metadata(&job_id, &metadata).await?;
-                }
-                self.emit_queue_event(
-                    queue_name,
-                    "delayed_moved",
-                    Some(&job_id),
-                    None,
-                    None,
-                )
-                .await;
+            let job_id = JobId((*id_str).to_string());
+            if let Some(mut metadata) = self.get_job(&job_id).await?
+                && metadata.state != JobState::Waiting
+            {
+                metadata.state = JobState::Waiting;
+                self.save_job_metadata(&job_id, &metadata).await?;
             }
+            self.emit_queue_event(queue_name, "delayed_moved", Some(&job_id), None, None)
+                .await;
         }
 
         Ok(ids.len())
@@ -529,11 +523,12 @@ impl Queue {
 
         match result {
             Some(job_id_str) => {
-                let job_id = JobId(
-                    job_id_str
-                        .parse()
-                        .map_err(|_| ChainMQError::Worker("Invalid job ID format".to_string()))?,
-                );
+                if job_id_str.is_empty() {
+                    return Err(ChainMQError::InvalidJobId(
+                        "empty job id in wait queue".into(),
+                    ));
+                }
+                let job_id = JobId(job_id_str);
                 self.apply_claimed_metadata(&job_id, worker_id).await?;
                 Ok(Some(job_id))
             }
@@ -730,13 +725,7 @@ impl Queue {
                 }
             }
 
-            self.emit_queue_event(
-                &queue_name,
-                "failed",
-                Some(job_id),
-                None,
-                Some(error),
-            )
+            self.emit_queue_event(&queue_name, "failed", Some(job_id), None, Some(error))
                 .await;
         }
 
@@ -786,13 +775,7 @@ impl Queue {
             }
         }
 
-        self.emit_queue_event(
-            &queue_name,
-            "failed",
-            Some(job_id),
-            None,
-            Some(error),
-        )
+        self.emit_queue_event(&queue_name, "failed", Some(job_id), None, Some(error))
             .await;
 
         Ok(())
@@ -920,104 +903,104 @@ impl Queue {
         let mut jobs = Vec::new();
 
         for job_id_str in job_ids {
-            if let Ok(job_id) = job_id_str.parse::<uuid::Uuid>() {
-                let job_id = JobId(job_id);
+            if job_id_str.is_empty() {
+                tracing::warn!("Skipping empty job id in {:?} list", state);
+                continue;
+            }
+            let job_id = JobId(job_id_str.clone());
 
-                let is_in_expected_list = match state {
-                    JobState::Waiting => {
-                        let mut found = false;
-                        for k in self.claim_wait_key_chain(queue_name) {
-                            let list: Vec<String> = self
-                                .async_conn
-                                .clone()
-                                .lrange(&k, 0, -1)
-                                .await
-                                .map_err(ChainMQError::Redis)?;
-                            if list.contains(&job_id_str) {
-                                found = true;
-                                break;
-                            }
-                        }
-                        found
-                    }
-                    JobState::Active => {
-                        let active_key = self.active_key(queue_name);
-                        self.async_conn
-                            .clone()
-                            .sismember::<_, _, bool>(&active_key, &job_id_str)
-                            .await
-                            .map_err(ChainMQError::Redis)?
-                    }
-                    JobState::Delayed => {
-                        let delayed_key = self.delayed_key(queue_name);
-                        match self
-                            .async_conn
-                            .clone()
-                            .zrank::<&str, &str, Option<i64>>(&delayed_key, &job_id_str)
-                            .await
-                        {
-                            Ok(Some(_)) => true,
-                            Ok(None) => false,
-                            Err(_) => false,
-                        }
-                    }
-                    JobState::Failed => {
-                        let failed_key = self.failed_key(queue_name);
+            let is_in_expected_list = match state {
+                JobState::Waiting => {
+                    let mut found = false;
+                    for k in self.claim_wait_key_chain(queue_name) {
                         let list: Vec<String> = self
                             .async_conn
                             .clone()
-                            .lrange(&failed_key, 0, -1)
+                            .lrange(&k, 0, -1)
                             .await
                             .map_err(ChainMQError::Redis)?;
-                        list.contains(&job_id_str)
+                        if list.contains(&job_id_str) {
+                            found = true;
+                            break;
+                        }
                     }
-                    JobState::Completed => {
-                        let completed_key = self.completed_key(queue_name);
-                        let list: Vec<String> = self
-                            .async_conn
-                            .clone()
-                            .lrange(&completed_key, 0, -1)
-                            .await
-                            .map_err(ChainMQError::Redis)?;
-                        list.contains(&job_id_str)
+                    found
+                }
+                JobState::Active => {
+                    let active_key = self.active_key(queue_name);
+                    self.async_conn
+                        .clone()
+                        .sismember::<_, _, bool>(&active_key, &job_id_str)
+                        .await
+                        .map_err(ChainMQError::Redis)?
+                }
+                JobState::Delayed => {
+                    let delayed_key = self.delayed_key(queue_name);
+                    match self
+                        .async_conn
+                        .clone()
+                        .zrank::<&str, &str, Option<i64>>(&delayed_key, &job_id_str)
+                        .await
+                    {
+                        Ok(Some(_)) => true,
+                        Ok(None) => false,
+                        Err(_) => false,
                     }
-                    _ => false,
-                };
+                }
+                JobState::Failed => {
+                    let failed_key = self.failed_key(queue_name);
+                    let list: Vec<String> = self
+                        .async_conn
+                        .clone()
+                        .lrange(&failed_key, 0, -1)
+                        .await
+                        .map_err(ChainMQError::Redis)?;
+                    list.contains(&job_id_str)
+                }
+                JobState::Completed => {
+                    let completed_key = self.completed_key(queue_name);
+                    let list: Vec<String> = self
+                        .async_conn
+                        .clone()
+                        .lrange(&completed_key, 0, -1)
+                        .await
+                        .map_err(ChainMQError::Redis)?;
+                    list.contains(&job_id_str)
+                }
+                _ => false,
+            };
 
-                if !is_in_expected_list {
+            if !is_in_expected_list {
+                tracing::warn!(
+                    "Job {} was listed for {:?} state but is not actually in that list - skipping",
+                    job_id_str,
+                    state
+                );
+                continue;
+            }
+
+            match self.get_job(&job_id).await {
+                Ok(Some(mut metadata)) => {
+                    let expected_state = state.clone();
+                    if metadata.state != expected_state {
+                        metadata.state = expected_state.clone();
+                        self.save_job_metadata(&job_id, &metadata).await?;
+                    }
+
+                    jobs.push(metadata);
+                }
+                Ok(None) => {
                     tracing::warn!(
-                        "Job {} was listed for {:?} state but is not actually in that list - skipping",
+                        "Job {} found in {:?} list but metadata not found",
                         job_id_str,
                         state
                     );
                     continue;
                 }
-
-                match self.get_job(&job_id).await {
-                    Ok(Some(mut metadata)) => {
-                        let expected_state = state.clone();
-                        if metadata.state != expected_state {
-                            metadata.state = expected_state.clone();
-                            self.save_job_metadata(&job_id, &metadata).await?;
-                        }
-
-                        jobs.push(metadata);
-                    }
-                    Ok(None) => {
-                        tracing::warn!(
-                            "Job {} found in {:?} list but metadata not found",
-                            job_id_str,
-                            state
-                        );
-                        continue;
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to get job {}: {}", job_id_str, e);
-                        continue;
-                    }
+                Err(e) => {
+                    tracing::warn!("Failed to get job {}: {}", job_id_str, e);
+                    continue;
                 }
-            } else {
-                tracing::warn!("Invalid job ID format: {}", job_id_str);
             }
         }
 
@@ -1221,81 +1204,82 @@ impl Queue {
         let mut recovered_count = 0;
 
         for job_id_str in active_job_ids {
-            if let Ok(job_id) = job_id_str.parse::<uuid::Uuid>() {
-                let job_id = JobId(job_id);
+            if job_id_str.is_empty() {
+                continue;
+            }
+            let job_id = JobId(job_id_str.clone());
 
-                if let Ok(Some(metadata)) = self.get_job(&job_id).await {
-                    let should_recover = if let Some(started_at) = metadata.started_at {
-                        let elapsed = now.signed_duration_since(started_at);
+            if let Ok(Some(metadata)) = self.get_job(&job_id).await {
+                let should_recover = if let Some(started_at) = metadata.started_at {
+                    let elapsed = now.signed_duration_since(started_at);
 
-                        let timeout_secs = metadata
-                            .options
-                            .timeout_secs
-                            .unwrap_or(max_stalled_secs)
-                            .min(max_stalled_secs);
-                        let timeout_duration = chrono::Duration::seconds(timeout_secs as i64);
+                    let timeout_secs = metadata
+                        .options
+                        .timeout_secs
+                        .unwrap_or(max_stalled_secs)
+                        .min(max_stalled_secs);
+                    let timeout_duration = chrono::Duration::seconds(timeout_secs as i64);
 
-                        let is_stalled = elapsed > timeout_duration;
-                        if is_stalled {
-                            tracing::warn!(
-                                "Job {} has been active for {:?}, exceeding timeout of {:?}",
-                                job_id,
-                                elapsed,
-                                timeout_duration
-                            );
-                        }
-                        is_stalled
-                    } else {
+                    let is_stalled = elapsed > timeout_duration;
+                    if is_stalled {
                         tracing::warn!(
-                            "Job {} is in active set but has no started_at timestamp",
-                            job_id
+                            "Job {} has been active for {:?}, exceeding timeout of {:?}",
+                            job_id,
+                            elapsed,
+                            timeout_duration
                         );
-                        true
-                    };
-
-                    if should_recover {
-                        let mut update_con = self.async_conn.clone();
-
-                        let removed: i32 = update_con
-                            .srem::<_, _, i32>(&active_key, job_id_str.clone())
-                            .await
-                            .map_err(ChainMQError::Redis)?;
-                        if removed == 0 {
-                            tracing::warn!(
-                                "Job {} was not in active set (may have been recovered already)",
-                                job_id
-                            );
-                            continue;
-                        }
-
-                        let disc = metadata.options.priority.redis_discriminant();
-                        let lifo = metadata.options.lifo;
-                        self.push_job_to_wait(&mut update_con, queue_name, &job_id_str, disc, lifo)
-                            .await?;
-
-                        let mut updated_metadata = metadata;
-                        updated_metadata.state = JobState::Waiting;
-                        updated_metadata.started_at = None;
-                        updated_metadata.worker_id = None;
-                        self.save_job_metadata(&job_id, &updated_metadata).await?;
-
-                        self.emit_queue_event(queue_name, "stalled", Some(&job_id), None, None)
-                            .await;
-
-                        recovered_count += 1;
-                        tracing::info!("Recovered job {} - moved from active to waiting", job_id);
                     }
+                    is_stalled
                 } else {
                     tracing::warn!(
-                        "Job {} found in active set but metadata not found - removing from active set",
+                        "Job {} is in active set but has no started_at timestamp",
                         job_id
                     );
+                    true
+                };
+
+                if should_recover {
                     let mut update_con = self.async_conn.clone();
-                    let _: () = update_con
-                        .srem::<_, _, ()>(&active_key, job_id_str.clone())
+
+                    let removed: i32 = update_con
+                        .srem::<_, _, i32>(&active_key, job_id_str.clone())
                         .await
                         .map_err(ChainMQError::Redis)?;
+                    if removed == 0 {
+                        tracing::warn!(
+                            "Job {} was not in active set (may have been recovered already)",
+                            job_id
+                        );
+                        continue;
+                    }
+
+                    let disc = metadata.options.priority.redis_discriminant();
+                    let lifo = metadata.options.lifo;
+                    self.push_job_to_wait(&mut update_con, queue_name, &job_id_str, disc, lifo)
+                        .await?;
+
+                    let mut updated_metadata = metadata;
+                    updated_metadata.state = JobState::Waiting;
+                    updated_metadata.started_at = None;
+                    updated_metadata.worker_id = None;
+                    self.save_job_metadata(&job_id, &updated_metadata).await?;
+
+                    self.emit_queue_event(queue_name, "stalled", Some(&job_id), None, None)
+                        .await;
+
+                    recovered_count += 1;
+                    tracing::info!("Recovered job {} - moved from active to waiting", job_id);
                 }
+            } else {
+                tracing::warn!(
+                    "Job {} found in active set but metadata not found - removing from active set",
+                    job_id
+                );
+                let mut update_con = self.async_conn.clone();
+                let _: () = update_con
+                    .srem::<_, _, ()>(&active_key, job_id_str.clone())
+                    .await
+                    .map_err(ChainMQError::Redis)?;
             }
         }
 

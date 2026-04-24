@@ -149,6 +149,33 @@ async fn enqueue_custom_job_id_rejected_if_duplicate() {
 
 #[tokio::test]
 #[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
+async fn enqueue_custom_string_job_id_claim_roundtrip() {
+    let queue = Queue::new(opts()).await.expect("queue new");
+    let mut opts = JobOptions::default();
+    opts.job_id = Some(JobId("external-ref-2026-04".into()));
+    let id = queue
+        .enqueue_with_options(TestJob { v: 42 }, opts)
+        .await
+        .expect("enqueue");
+    assert_eq!(id.0, "external-ref-2026-04");
+
+    let claimed = queue
+        .claim_job("integration_q", "w1")
+        .await
+        .expect("claim");
+    assert_eq!(
+        claimed.as_ref().map(|j| j.0.as_str()),
+        Some("external-ref-2026-04")
+    );
+
+    queue
+        .complete_job(&id, "integration_q", None)
+        .await
+        .expect("complete");
+}
+
+#[tokio::test]
+#[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
 async fn fail_job_retries_then_failed() {
     let queue = Queue::new(opts()).await.expect("queue new");
     let job = TestJob { v: 1 };
@@ -447,21 +474,18 @@ async fn lifecycle_events_in_stream() {
         .await
         .expect("read");
     assert!(
-        ev.iter().any(|e| e["type"] == "waiting" && e["jobId"] == id.to_string()),
+        ev.iter()
+            .any(|e| e["type"] == "waiting" && e["jobId"] == id.to_string()),
         "expected waiting event, got {ev:?}"
     );
 
-    queue
-        .claim_job("integration_q", "w1")
-        .await
-        .expect("claim");
+    queue.claim_job("integration_q", "w1").await.expect("claim");
     let ev2 = queue
         .read_queue_events("integration_q", 50)
         .await
         .expect("read");
     assert!(
-        ev2
-            .iter()
+        ev2.iter()
             .any(|e| e["type"] == "active" && e["jobId"] == id.to_string()),
         "expected active event, got {ev2:?}"
     );
@@ -475,9 +499,8 @@ async fn lifecycle_events_in_stream() {
         .await
         .expect("read");
     assert!(
-        ev3.iter().any(
-            |e| e["type"] == "completed" && e["jobId"] == id.to_string()
-        ),
+        ev3.iter()
+            .any(|e| e["type"] == "completed" && e["jobId"] == id.to_string()),
         "expected completed event, got {ev3:?}"
     );
 
@@ -491,9 +514,8 @@ async fn lifecycle_events_in_stream() {
         .await
         .expect("read");
     assert!(
-        ev4.iter().any(
-            |e| e["type"] == "removed" && e["jobId"] == id2.to_string()
-        ),
+        ev4.iter()
+            .any(|e| e["type"] == "removed" && e["jobId"] == id2.to_string()),
         "expected removed event, got {ev4:?}"
     );
 }

@@ -39,12 +39,22 @@ impl Visit for JobIdFieldVisitor {
 }
 
 fn parse_job_id_field(raw: &str) -> Option<JobId> {
-    let s = raw.trim().trim_matches('"');
-    if let Ok(u) = uuid::Uuid::parse_str(s) {
-        return Some(JobId(u));
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
     }
-    let inner = s.strip_prefix("JobId(")?.strip_suffix(')')?.trim();
-    uuid::Uuid::parse_str(inner).ok().map(JobId)
+    if let Some(rest) = s.strip_prefix("JobId(").and_then(|r| r.strip_suffix(')')) {
+        let inner = rest.trim();
+        if inner.starts_with('"') {
+            return serde_json::from_str::<String>(inner)
+                .ok()
+                .filter(|x| !x.is_empty())
+                .map(JobId);
+        }
+        return (!inner.is_empty()).then(|| JobId(inner.to_string()));
+    }
+    let plain = s.trim_matches('"');
+    (!plain.is_empty()).then(|| JobId(plain.to_string()))
 }
 
 #[derive(Default)]
@@ -224,14 +234,20 @@ mod tests {
     fn parse_job_id_field_accepts_uuid_string() {
         let u = uuid::Uuid::new_v4();
         let id = parse_job_id_field(&u.to_string()).expect("uuid");
-        assert_eq!(id.0, u);
+        assert_eq!(id.0, u.to_string());
+    }
+
+    #[test]
+    fn parse_job_id_field_accepts_arbitrary_string() {
+        let id = parse_job_id_field("invoice-42/line-3").expect("custom");
+        assert_eq!(id.0, "invoice-42/line-3");
     }
 
     #[test]
     fn parse_job_id_field_accepts_debug_tuple() {
-        let u = uuid::Uuid::new_v4();
-        let s = format!("JobId({u})");
-        let id = parse_job_id_field(&s).expect("debug");
-        assert_eq!(id.0, u);
+        let id = JobId("my-custom-id".into());
+        let s = format!("{id:?}");
+        let parsed = parse_job_id_field(&s).expect("debug");
+        assert_eq!(parsed, id);
     }
 }
