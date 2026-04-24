@@ -12,6 +12,9 @@ pub enum ChainMQError {
     #[error("Job not found: {0}")]
     JobNotFound(crate::JobId),
 
+    #[error("Job id already exists: {0}")]
+    DuplicateJobId(crate::JobId),
+
     #[error("Queue not found: {0}")]
     QueueNotFound(String),
 

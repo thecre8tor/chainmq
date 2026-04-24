@@ -57,6 +57,11 @@ pub enum JobState {
 /// Job execution options
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobOptions {
+    /// If set, this id is used for the new job; if unset, a random id is generated.
+    /// Enqueue fails with [`crate::ChainMQError::DuplicateJobId`] if a job already exists
+    /// for this id (see [`crate::Queue::enqueue_with_options`]). Not stored in job metadata.
+    #[serde(default)]
+    pub job_id: Option<JobId>,
     pub delay_secs: Option<u64>,
     /// Reserved for future priority ordering; currently ignored (FIFO wait queue).
     pub priority: Priority,
@@ -70,6 +75,7 @@ pub struct JobOptions {
 impl Default for JobOptions {
     fn default() -> Self {
         Self {
+            job_id: None,
             delay_secs: None,
             priority: Priority::Normal,
             attempts: 3,

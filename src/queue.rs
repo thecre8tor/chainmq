@@ -125,17 +125,24 @@ impl Queue {
         self.enqueue_with_options(job, T::default_options()).await
     }
 
-    /// Enqueue a job with custom options
+    /// Enqueue a job with custom options.
+    ///
+    /// If [`JobOptions::job_id`] is set, that id is used; otherwise a new UUID is generated.
+    /// If a job hash already has `metadata` for that id, returns [`ChainMQError::DuplicateJobId`]
+    /// (atomic via Redis `HSETNX`). After [`Queue::delete_job`], the same id may be enqueued again.
     pub async fn enqueue_with_options<T: Job>(&self, job: T, options: JobOptions) -> Result<JobId> {
-        let job_id = JobId::new();
+        let job_id = options.job_id.clone().unwrap_or_else(JobId::new);
         let now = Utc::now();
+
+        let mut stored_options = options.clone();
+        stored_options.job_id = None;
 
         let metadata = JobMetadata {
             id: job_id.clone(),
             name: T::name().to_string(),
             queue_name: T::queue_name().to_string(),
             payload: serde_json::to_value(&job)?,
-            options: options.clone(),
+            options: stored_options,
             state: if options.delay_secs.is_some() {
                 JobState::Delayed
             } else {
@@ -154,10 +161,13 @@ impl Queue {
         let mut conn = self.async_conn.clone();
         let job_key = self.job_key(&job_id);
         let metadata_json = serde_json::to_string(&metadata)?;
-        let _: () = conn
-            .hset::<_, _, _, ()>(&job_key, "metadata", metadata_json)
+        let inserted: bool = conn
+            .hset_nx(&job_key, "metadata", &metadata_json)
             .await
             .map_err(ChainMQError::Redis)?;
+        if !inserted {
+            return Err(ChainMQError::DuplicateJobId(job_id));
+        }
 
         let qname = T::queue_name();
         let registry_key = self.queues_registry_key();
@@ -313,18 +323,17 @@ impl Queue {
         Ok(())
     }
 
-    /// Fail a job and potentially retry or move to failed queue
-    pub async fn fail_job(
-        &self,
-        job_id: &JobId,
-        queue_name: &str,
-        error: &str,
-        metadata: &JobMetadata,
-    ) -> Result<()> {
-        let mut conn = self.async_conn.clone();
-        let active_key = self.active_key(queue_name);
+    /// Fail a job and potentially retry or move to failed queue.
+    /// Loads the latest metadata from Redis (queue name, attempt count, retry options, backoff).
+    pub async fn fail_job(&self, job_id: &JobId, error: &str) -> Result<()> {
+        let mut meta = match self.get_job(job_id).await? {
+            Some(m) => m,
+            None => return Err(ChainMQError::JobNotFound(job_id.clone())),
+        };
 
-        let mut meta = metadata.clone();
+        let queue_name = meta.queue_name.clone();
+        let mut conn = self.async_conn.clone();
+        let active_key = self.active_key(&queue_name);
         let new_attempts = meta.attempts + 1;
         meta.attempts = new_attempts;
         meta.last_error = Some(error.to_string());
@@ -337,7 +346,7 @@ impl Queue {
 
             self.save_job_metadata(job_id, &meta).await?;
 
-            let delayed_key = self.delayed_key(queue_name);
+            let delayed_key = self.delayed_key(&queue_name);
             let _: () = conn
                 .zadd::<_, _, _, ()>(&delayed_key, job_id.to_string(), execute_at)
                 .await
@@ -346,7 +355,7 @@ impl Queue {
             meta.state = JobState::Failed;
             self.save_job_metadata(job_id, &meta).await?;
 
-            let failed_key = self.failed_key(queue_name);
+            let failed_key = self.failed_key(&queue_name);
             let _: () = conn
                 .lpush::<_, _, ()>(&failed_key, job_id.to_string())
                 .await

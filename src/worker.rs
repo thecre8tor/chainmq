@@ -519,9 +519,7 @@ impl Worker {
             }
             Err(e) => {
                 let error_msg = format!("{}", e);
-                queue
-                    .fail_job(&job_id, &queue_name, &error_msg, &metadata)
-                    .await?;
+                queue.fail_job(&job_id, &error_msg).await?;
                 error!("Job {} failed: {}", job_id, error_msg);
 
                 // Record metrics using global static

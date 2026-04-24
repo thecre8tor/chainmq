@@ -7,8 +7,8 @@
 //! With Redis at `REDIS_URL` or default `redis://127.0.0.1:6379`.
 use async_trait::async_trait;
 use chainmq::{
-    Job, JobContext, JobLogLine, JobMetadata, JobOptions, JobState, Queue, QueueOptions,
-    RedisClient, Result,
+    ChainMQError, Job, JobContext, JobId, JobLogLine, JobMetadata, JobOptions, JobState, Queue,
+    QueueOptions, RedisClient, Result,
 };
 use serde::{Deserialize, Serialize};
 
@@ -71,6 +71,33 @@ async fn enqueue_claim_complete_metadata_roundtrip() {
 
 #[tokio::test]
 #[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
+async fn enqueue_custom_job_id_rejected_if_duplicate() {
+    let queue = Queue::new(opts()).await.expect("queue new");
+    let fixed = JobId::new();
+    let mut opts = JobOptions::default();
+    opts.job_id = Some(fixed.clone());
+    let id = queue
+        .enqueue_with_options(TestJob { v: 10 }, opts.clone())
+        .await
+        .expect("first enqueue");
+    assert_eq!(id, fixed);
+
+    let m = queue.get_job(&fixed).await.expect("get").expect("some");
+    assert_eq!(m.id, fixed);
+    assert!(m.options.job_id.is_none());
+
+    let err = queue
+        .enqueue_with_options(TestJob { v: 11 }, opts)
+        .await
+        .expect_err("duplicate id");
+    match err {
+        ChainMQError::DuplicateJobId(id) => assert_eq!(id, fixed),
+        other => panic!("expected DuplicateJobId, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
 async fn fail_job_retries_then_failed() {
     let queue = Queue::new(opts()).await.expect("queue new");
     let job = TestJob { v: 1 };
@@ -83,11 +110,7 @@ async fn fail_job_retries_then_failed() {
 
     queue.claim_job("integration_q", "w1").await.expect("claim");
 
-    let meta = queue.get_job(&id).await.expect("get").expect("some");
-    queue
-        .fail_job(&id, "integration_q", "boom", &meta)
-        .await
-        .expect("fail");
+    queue.fail_job(&id, "boom").await.expect("fail");
 
     let delayed = queue.get_job(&id).await.expect("get").expect("some");
     assert_eq!(delayed.state, JobState::Delayed);
@@ -98,11 +121,7 @@ async fn fail_job_retries_then_failed() {
         .await
         .expect("claim2");
 
-    let meta2 = queue.get_job(&id).await.expect("get").expect("some");
-    queue
-        .fail_job(&id, "integration_q", "boom2", &meta2)
-        .await
-        .expect("fail2");
+    queue.fail_job(&id, "boom2").await.expect("fail2");
 
     let failed = queue.get_job(&id).await.expect("get").expect("some");
     assert_eq!(failed.state, JobState::Failed);
