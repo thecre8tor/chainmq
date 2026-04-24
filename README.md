@@ -255,7 +255,7 @@ cargo run --example web_ui
 - **Queue**: One client handle for a Redis instance and `key_prefix`. It persists job metadata and manages wait / delayed / active / failed lists. **Logical queues** are the string returned by `Job::queue_name()`; many names can coexist under one `Queue`. Listing and the web UI operate on every queue name in that namespace.
 - **Worker**: Polls a configured queue name, claims jobs atomically via Lua scripts, and executes them through `JobRegistry`
 - **Registry**: Maps job type names to executors for deserialization and dispatch
-- **JobContext**: Provides access to application state and job metadata during execution
+- **JobContext**: Application state (`AppContext`), job metadata, the same `Arc<Queue>` the worker uses (`queue()`), optional progress updates, and a cooperative `CancellationToken`
 
 **Web UI:** Mount [`chainmq_dashboard_router`](https://docs.rs/chainmq/latest/chainmq/fn.chainmq_dashboard_router.html) (or the Actix [`configure_chainmq_web_ui`](https://docs.rs/chainmq/latest/chainmq/fn.configure_chainmq_web_ui.html) helper) with **one** [`Queue`](https://docs.rs/chainmq/latest/chainmq/struct.Queue.html) for the same Redis + `key_prefix` as workers; it discovers **all** logical queue names in that namespace. Details: [README_UI.md](./README_UI.md).
 

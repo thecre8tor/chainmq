@@ -274,10 +274,12 @@ function renderOptionsKvHtml(job) {
   const backoff = formatBackoffHuman(o.backoff);
   const timeout =
     o.timeout_secs != null ? `${o.timeout_secs}s` : null;
+  const lifo = o.lifo === true ? "Yes" : "No";
   /** @type {[string, string][]} */
   const rows = [
     ["Delay", delay],
     ["Priority", pri],
+    ["LIFO bucket", lifo],
     ["Retries", retries],
     ["Backoff", backoff],
   ];
@@ -285,7 +287,7 @@ function renderOptionsKvHtml(job) {
   if (o.rate_limit_key != null && o.rate_limit_key !== "")
     rows.push(["Rate limit key", String(o.rate_limit_key)]);
   const fifoHint =
-    "Priority is reserved; the wait queue is FIFO for now.";
+    "Higher priority is claimed first. LIFO uses a separate per-priority bucket.";
   return rows
     .map(([k, v]) => {
       const hintTitle = k === "Priority" ? ` title="${escapeAttr(fifoHint)}"` : "";
@@ -1675,6 +1677,11 @@ function renderJobDetailPage(job) {
     ? JSON.stringify(job.response, null, 2)
     : "";
 
+  const hasProgress = job.progress != null;
+  const progressJson = hasProgress
+    ? JSON.stringify(job.progress, null, 2)
+    : "";
+
   const copyIconSvg = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
 
   const responseIsPlainObject =
@@ -1714,6 +1721,15 @@ function renderJobDetailPage(job) {
   </div>`
     : renderResponseEmptyState(job);
 
+  const progressBlock = hasProgress
+    ? `<div class="job-detail-card job-detail-card--lift job-detail-card--progress">
+    <div class="job-detail-block-head">
+      <h3 class="job-detail-block-head__title">Progress</h3>
+    </div>
+    <div class="job-detail-card-body"><div class="job-detail-json job-detail-json--tone-options job-detail-json--in-card"><pre><code class="job-detail-code job-detail-code--highlighted">${highlightJsonToHtml(progressJson)}</code></pre></div></div>
+  </div>`
+    : "";
+
   const lifecycleCard = renderLifecycleCard(job);
   const execMetadata = renderJobExecutionMetadata(job);
   const optionsStructured = renderOptionsKvHtml(job);
@@ -1746,6 +1762,7 @@ function renderJobDetailPage(job) {
       <div class="job-detail-main-grid">
         <div class="job-detail-col job-detail-col--primary">
           ${lifecycleCard}
+          ${progressBlock}
           ${responseBlock}
         </div>
         <div class="job-detail-col job-detail-col--secondary">
@@ -1762,7 +1779,7 @@ function renderJobDetailPage(job) {
                 <div class="job-detail-struct-wrap job-detail-kv job-detail-kv--exec">${optionsStructured}</div>
                 <div class="job-detail-json-wrap"><div class="job-detail-json job-detail-json--tone-options"><pre><code class="job-detail-code job-detail-code--highlighted">${highlightJsonToHtml(optionsJson)}</code></pre></div></div>
               </div>
-              <p class="job-detail-hint job-detail-hint--exec-foot">Hover <strong>Priority</strong> for the FIFO note.</p>
+              <p class="job-detail-hint job-detail-hint--exec-foot">Hover <strong>Priority</strong> for wait-order notes.</p>
             </div>
             ${execMetadata}
           </div>

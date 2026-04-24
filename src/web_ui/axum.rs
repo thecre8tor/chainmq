@@ -22,8 +22,8 @@ use crate::Queue;
 use super::core::{
     self, CleanQueueRequest, DeleteJobRequest, JobLogsQuery, LoginRequest, RetryJobRequest,
     SESSION_AUTH_KEY, UiAssets, WebUIMountConfig, embedded_asset_rel_key, embedded_content_type,
-    full_path_for_embedded_request, is_ui_auth_public_route, json_reauth_value, session_cookie_path,
-    session_signing_key_material, verify_credentials,
+    full_path_for_embedded_request, is_ui_auth_public_route, json_reauth_value,
+    session_cookie_path, session_signing_key_material, verify_credentials,
 };
 
 /// Application state for the dashboard (queue + auth + static URL prefix).
@@ -122,13 +122,11 @@ pub fn chainmq_dashboard_router(queue: Queue, config: WebUIMountConfig) -> std::
         .route("/", get(serve_embedded_axum))
         .route("/{*path}", get(serve_embedded_axum));
 
-    Ok(
-        Router::new()
-            .nest("/api", api)
-            .merge(static_r)
-            .fallback(get(serve_embedded_axum))
-            .with_state(state),
-    )
+    Ok(Router::new()
+        .nest("/api", api)
+        .merge(static_r)
+        .fallback(get(serve_embedded_axum))
+        .with_state(state))
 }
 
 async fn ui_internal_json_only_axum(

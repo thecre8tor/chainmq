@@ -71,7 +71,10 @@ mod core_tests {
             "/dashboard/app.js"
         );
         assert_eq!(full_path_for_embedded_request("/", "/"), "/");
-        assert_eq!(full_path_for_embedded_request("/styles.css", "/"), "/styles.css");
+        assert_eq!(
+            full_path_for_embedded_request("/styles.css", "/"),
+            "/styles.css"
+        );
     }
 
     #[test]

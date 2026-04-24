@@ -13,6 +13,7 @@ use tokio::{
     task::JoinHandle,
     time::{Duration, interval, timeout},
 };
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, instrument, warn};
 
 /// Worker configuration
@@ -140,6 +141,7 @@ pub struct Worker {
     handles: Vec<JoinHandle<()>>,
     shutdown_tx: broadcast::Sender<()>,
     is_shutting_down: Arc<AtomicBool>,
+    jobs_cancellation: CancellationToken,
 }
 
 impl Worker {
@@ -167,6 +169,7 @@ impl Worker {
             handles: Vec::new(),
             shutdown_tx,
             is_shutting_down,
+            jobs_cancellation: CancellationToken::new(),
         })
     }
 
@@ -250,6 +253,7 @@ impl Worker {
         );
 
         self.is_shutting_down.store(true, Ordering::SeqCst);
+        self.jobs_cancellation.cancel();
         info!("Worker stopped accepting new jobs");
 
         let handles = std::mem::take(&mut self.handles);
@@ -311,6 +315,7 @@ impl Worker {
     /// Force immediate shutdown (emergency only)
     pub async fn force_stop(&mut self) {
         self.is_shutting_down.store(true, Ordering::SeqCst);
+        self.jobs_cancellation.cancel();
         for handle in self.handles.drain(..) {
             handle.abort();
         }
@@ -325,6 +330,7 @@ impl Worker {
         let worker_id = self.config.worker_id.clone();
         let poll_interval = self.config.poll_interval;
         let is_shutting_down = Arc::clone(&self.is_shutting_down);
+        let jobs_cancellation = self.jobs_cancellation.clone();
 
         tokio::spawn(async move {
             let mut interval = interval(poll_interval);
@@ -362,6 +368,7 @@ impl Worker {
                         let job_queue_name = queue_name.clone();
                         let job_worker_id = worker_id.clone();
                         let job_shutdown_flag = Arc::clone(&is_shutting_down);
+                        let job_cancel = jobs_cancellation.child_token();
 
                         tokio::spawn(async move {
                             let _permit = permit;
@@ -374,6 +381,7 @@ impl Worker {
                                 job_queue_name,
                                 job_worker_id,
                                 job_shutdown_flag,
+                                job_cancel,
                             )
                             .await
                             {
@@ -471,6 +479,7 @@ impl Worker {
         queue_name: String,
         _worker_id: String,
         is_shutting_down: Arc<AtomicBool>,
+        cancel: CancellationToken,
     ) -> Result<()> {
         let start_time = std::time::Instant::now();
 
@@ -490,14 +499,28 @@ impl Worker {
         };
 
         // Create job context
-        let job_context = JobContext::new(job_id.clone(), metadata.clone(), app_context);
+        let job_context = JobContext::new(
+            job_id.clone(),
+            metadata.clone(),
+            app_context,
+            Arc::clone(&queue),
+            cancel,
+        );
 
         // Execute the job under the job_execution span so tracing layers can attribute events.
-        let result = {
-            let _job_span = job_context.span.enter();
-            registry
-                .execute_job(&metadata.name, metadata.payload.clone(), &job_context)
-                .await
+        let result = tokio::select! {
+            biased;
+            _ = job_context.cancellation_token().cancelled() => {
+                warn!("Job {} cancelled — requeueing", job_id);
+                queue.requeue_claimed_job(&job_id, &queue_name).await?;
+                return Ok(());
+            }
+            r = async {
+                let _job_span = job_context.span.enter();
+                registry
+                    .execute_job(&metadata.name, metadata.payload.clone(), &job_context)
+                    .await
+            } => r,
         };
 
         let execution_time = start_time.elapsed();
@@ -519,7 +542,7 @@ impl Worker {
             }
             Err(e) => {
                 let error_msg = format!("{}", e);
-                queue.fail_job(&job_id, &error_msg).await?;
+                queue.fail_after_perform_error(&job_id, &error_msg).await?;
                 error!("Job {} failed: {}", job_id, error_msg);
 
                 // Record metrics using global static

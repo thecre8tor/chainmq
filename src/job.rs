@@ -28,13 +28,20 @@ pub struct JobLogLine {
     pub message: String,
 }
 
-/// Job execution priority (reserved for future use — not enforced by the queue yet; FIFO only).
+/// Job execution priority — enforced on the wait queue (higher first; see per-bucket wait keys).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Priority {
     Low = 1,
     Normal = 5,
     High = 10,
     Critical = 20,
+}
+
+impl Priority {
+    /// Redis wait-bucket suffix (`wait:p{disc}` / `waitl:p{disc}`).
+    pub fn redis_discriminant(self) -> i32 {
+        self as i32
+    }
 }
 
 impl Default for Priority {
@@ -63,8 +70,10 @@ pub struct JobOptions {
     #[serde(default)]
     pub job_id: Option<JobId>,
     pub delay_secs: Option<u64>,
-    /// Reserved for future priority ordering; currently ignored (FIFO wait queue).
     pub priority: Priority,
+    /// When `true`, the job waits in a LIFO bucket for its priority (`RPUSH` / `RPOP` per bucket).
+    #[serde(default)]
+    pub lifo: bool,
     pub attempts: u32,
     pub backoff: crate::backoff::BackoffStrategy,
     pub timeout_secs: Option<u64>,
@@ -78,6 +87,7 @@ impl Default for JobOptions {
             job_id: None,
             delay_secs: None,
             priority: Priority::Normal,
+            lifo: false,
             attempts: 3,
             backoff: crate::backoff::BackoffStrategy::Exponential { base: 2, cap: 300 },
             timeout_secs: Some(300), // 5 minutes default
@@ -105,6 +115,9 @@ pub struct JobMetadata {
     /// Set via [`crate::JobContext::set_response`] before the job completes successfully.
     #[serde(default)]
     pub response: Option<serde_json::Value>,
+    /// Optional progress payload (BullMQ-style `updateProgress`), updated via [`crate::JobContext::set_progress`].
+    #[serde(default)]
+    pub progress: Option<serde_json::Value>,
 }
 
 /// Core trait that all jobs must implement

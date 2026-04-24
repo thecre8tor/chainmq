@@ -27,6 +27,7 @@ pub use job_log_layer::{JobLogLayer, job_logs_layer};
 pub use queue::{Queue, QueueOptions};
 pub use redis::RedisClient;
 pub use registry::JobRegistry;
+pub use tokio_util::sync::CancellationToken;
 pub use worker::{Worker, WorkerBuilder};
 
 #[cfg(any(feature = "web-ui-axum", feature = "web-ui-actix"))]

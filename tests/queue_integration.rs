@@ -7,10 +7,20 @@
 //! With Redis at `REDIS_URL` or default `redis://127.0.0.1:6379`.
 use async_trait::async_trait;
 use chainmq::{
-    ChainMQError, Job, JobContext, JobId, JobLogLine, JobMetadata, JobOptions, JobState, Queue,
-    QueueOptions, RedisClient, Result,
+    ChainMQError, Job, JobContext, JobId, JobLogLine, JobMetadata, JobOptions, JobState, Priority,
+    Queue, QueueOptions, RedisClient, Result,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+#[derive(Clone, Default)]
+struct EmptyApp;
+
+impl chainmq::AppContext for EmptyApp {
+    fn clone_context(&self) -> Arc<dyn chainmq::AppContext> {
+        Arc::new(self.clone())
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TestJob {
@@ -25,6 +35,47 @@ impl Job for TestJob {
 
     fn name() -> &'static str {
         "TestJob"
+    }
+
+    fn queue_name() -> &'static str {
+        "integration_q"
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProgressJob {
+    v: u32,
+}
+
+#[async_trait]
+impl Job for ProgressJob {
+    async fn perform(&self, ctx: &JobContext) -> Result<()> {
+        ctx.set_progress(serde_json::json!({ "pct": 42, "step": "x" }))
+            .await?;
+        Ok(())
+    }
+
+    fn name() -> &'static str {
+        "ProgressJob"
+    }
+
+    fn queue_name() -> &'static str {
+        "integration_q"
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ParentJob;
+
+#[async_trait]
+impl Job for ParentJob {
+    async fn perform(&self, ctx: &JobContext) -> Result<()> {
+        let _ = ctx.queue().enqueue(TestJob { v: 99 }).await?;
+        Ok(())
+    }
+
+    fn name() -> &'static str {
+        "ParentJob"
     }
 
     fn queue_name() -> &'static str {
@@ -110,7 +161,10 @@ async fn fail_job_retries_then_failed() {
 
     queue.claim_job("integration_q", "w1").await.expect("claim");
 
-    queue.fail_job(&id, "boom").await.expect("fail");
+    queue
+        .fail_after_perform_error(&id, "boom")
+        .await
+        .expect("fail");
 
     let delayed = queue.get_job(&id).await.expect("get").expect("some");
     assert_eq!(delayed.state, JobState::Delayed);
@@ -121,11 +175,61 @@ async fn fail_job_retries_then_failed() {
         .await
         .expect("claim2");
 
-    queue.fail_job(&id, "boom2").await.expect("fail2");
+    queue
+        .fail_after_perform_error(&id, "boom2")
+        .await
+        .expect("fail2");
 
     let failed = queue.get_job(&id).await.expect("get").expect("some");
     assert_eq!(failed.state, JobState::Failed);
     assert_eq!(failed.attempts, 2);
+}
+
+#[tokio::test]
+#[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
+async fn fail_job_without_claim_removes_from_wait() {
+    let queue = Queue::new(opts()).await.expect("queue new");
+    let mut opts = JobOptions::default();
+    opts.attempts = 1;
+    let id = queue
+        .enqueue_with_options(TestJob { v: 7 }, opts)
+        .await
+        .expect("enqueue");
+
+    queue.fail_job(&id, "pre-run fail").await.expect("fail");
+
+    let m = queue.get_job(&id).await.expect("get").expect("some");
+    assert_eq!(m.state, JobState::Failed);
+    assert_eq!(m.attempts, 1);
+
+    let claimed = queue.claim_job("integration_q", "w").await.expect("claim");
+    assert!(
+        claimed.is_none(),
+        "job must not remain on wait after fail_job"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
+async fn fail_job_moves_completed_job_to_failed() {
+    let queue = Queue::new(opts()).await.expect("queue new");
+    let id = queue.enqueue(TestJob { v: 21 }).await.expect("enqueue");
+    queue.claim_job("integration_q", "w").await.expect("claim");
+    queue
+        .complete_job(&id, "integration_q", None)
+        .await
+        .expect("complete");
+
+    queue
+        .fail_job(&id, "admin revoked send")
+        .await
+        .expect("fail after complete");
+
+    let m = queue.get_job(&id).await.expect("get").expect("some");
+    assert_eq!(m.state, JobState::Failed);
+    assert_eq!(m.last_error.as_deref(), Some("admin revoked send"));
+    assert!(m.completed_at.is_none());
+    assert!(m.response.is_none());
 }
 
 #[tokio::test]
@@ -202,4 +306,133 @@ async fn job_logs_append_and_read_roundtrip() {
         .expect("delete");
     let after = queue.get_job_logs(&id, 50).await.expect("get after del");
     assert!(after.is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
+async fn claim_prefers_higher_priority_first() {
+    let queue = Queue::new(opts()).await.expect("queue new");
+    let mut lo = JobOptions::default();
+    lo.priority = Priority::Low;
+    let low_id = queue
+        .enqueue_with_options(TestJob { v: 1 }, lo)
+        .await
+        .expect("enqueue low");
+
+    let mut hi = JobOptions::default();
+    hi.priority = Priority::High;
+    let hi_id = queue
+        .enqueue_with_options(TestJob { v: 2 }, hi)
+        .await
+        .expect("enqueue high");
+
+    let first = queue.claim_job("integration_q", "w").await.expect("claim");
+    assert_eq!(first, Some(hi_id));
+    let second = queue.claim_job("integration_q", "w").await.expect("claim2");
+    assert_eq!(second, Some(low_id));
+}
+
+#[tokio::test]
+#[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
+async fn lifo_bucket_claims_newer_first() {
+    let queue = Queue::new(opts()).await.expect("queue new");
+    let mut fifo = JobOptions::default();
+    fifo.priority = Priority::Normal;
+    fifo.lifo = false;
+    let a = queue
+        .enqueue_with_options(TestJob { v: 1 }, fifo.clone())
+        .await
+        .expect("a");
+    let b = queue
+        .enqueue_with_options(TestJob { v: 2 }, fifo)
+        .await
+        .expect("b");
+
+    let first = queue.claim_job("integration_q", "w").await.expect("claim");
+    assert_eq!(first, Some(a.clone()), "FIFO should take oldest first");
+
+    queue
+        .complete_job(&a, "integration_q", None)
+        .await
+        .expect("complete a");
+    queue
+        .complete_job(&b, "integration_q", None)
+        .await
+        .expect("complete b");
+
+    let mut lifo_opts = JobOptions::default();
+    lifo_opts.priority = Priority::Normal;
+    lifo_opts.lifo = true;
+    let x = queue
+        .enqueue_with_options(TestJob { v: 3 }, lifo_opts.clone())
+        .await
+        .expect("x");
+    let y = queue
+        .enqueue_with_options(TestJob { v: 4 }, lifo_opts)
+        .await
+        .expect("y");
+
+    let first_l = queue.claim_job("integration_q", "w").await.expect("claim");
+    assert_eq!(
+        first_l,
+        Some(y),
+        "LIFO bucket should take newest (last enqueued) first"
+    );
+    let second_l = queue.claim_job("integration_q", "w").await.expect("c2");
+    assert_eq!(second_l, Some(x));
+}
+
+#[tokio::test]
+#[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
+async fn perform_can_enqueue_follow_up_via_context_queue() {
+    let queue = Arc::new(Queue::new(opts()).await.expect("queue new"));
+    let parent_id = queue.enqueue(ParentJob).await.expect("parent");
+
+    let meta = queue.get_job(&parent_id).await.expect("get").expect("meta");
+    let job_ctx = JobContext::new(
+        parent_id.clone(),
+        meta,
+        Arc::new(EmptyApp::default()) as Arc<dyn chainmq::AppContext>,
+        Arc::clone(&queue),
+        chainmq::CancellationToken::new(),
+    );
+    ParentJob.perform(&job_ctx).await.expect("perform");
+
+    let waiting = queue
+        .list_jobs("integration_q", JobState::Waiting, Some(10))
+        .await
+        .expect("list");
+    assert!(
+        waiting
+            .iter()
+            .any(|j| j.name == "TestJob" && j.payload["v"] == 99),
+        "expected child TestJob on wait: {:?}",
+        waiting
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
+async fn set_progress_persisted_on_metadata() {
+    let queue = Arc::new(Queue::new(opts()).await.expect("queue new"));
+    let id = queue.enqueue(ProgressJob { v: 1 }).await.expect("enqueue");
+
+    let meta = queue.get_job(&id).await.expect("get").expect("meta");
+    let job_ctx = JobContext::new(
+        id.clone(),
+        meta,
+        Arc::new(EmptyApp::default()) as Arc<dyn chainmq::AppContext>,
+        Arc::clone(&queue),
+        chainmq::CancellationToken::new(),
+    );
+    ProgressJob { v: 1 }
+        .perform(&job_ctx)
+        .await
+        .expect("perform");
+
+    let m = queue.get_job(&id).await.expect("get2").expect("some");
+    assert_eq!(
+        m.progress,
+        Some(serde_json::json!({ "pct": 42, "step": "x" }))
+    );
 }

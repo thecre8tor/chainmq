@@ -1,7 +1,7 @@
 use crate::redis::RedisClient;
 // src/queue.rs
 use crate::{
-    ChainMQError, Job, JobId, JobLogLine, JobMetadata, JobOptions, JobState, Result,
+    ChainMQError, Job, JobId, JobLogLine, JobMetadata, JobOptions, JobState, Priority, Result,
     lua::LuaScripts,
 };
 use chrono::Utc;
@@ -22,6 +22,10 @@ pub struct QueueOptions {
     pub max_stalled_interval: u64,
     /// Max log lines retained per job in Redis (older lines dropped). Used by job log tracing layer.
     pub job_logs_max_lines: usize,
+    /// Max entries kept on the completed list after each completion. `None` disables trimming.
+    pub max_completed_len: Option<usize>,
+    /// Max entries kept on the failed list after each terminal failure. `None` disables trimming.
+    pub max_failed_len: Option<usize>,
 }
 
 impl Default for QueueOptions {
@@ -33,6 +37,8 @@ impl Default for QueueOptions {
             default_concurrency: 10,
             max_stalled_interval: 30000, // 30 seconds
             job_logs_max_lines: 500,
+            max_completed_len: Some(1000),
+            max_failed_len: None,
         }
     }
 }
@@ -67,12 +73,133 @@ impl Queue {
         format!("{}:queues", self.options.key_prefix)
     }
 
-    async fn save_job_metadata(&self, job_id: &JobId, metadata: &JobMetadata) -> Result<()> {
+    fn events_channel(&self, queue_name: &str) -> String {
+        format!("{}:events:{}", self.options.key_prefix, queue_name)
+    }
+
+    /// Claim order: higher priority first (discriminants 20,10,5,1); FIFO bucket then LIFO per level; then legacy `:wait`.
+    const WAIT_BUCKET_ORDER: [(i32, bool); 8] = [
+        (20, false),
+        (20, true),
+        (10, false),
+        (10, true),
+        (5, false),
+        (5, true),
+        (1, false),
+        (1, true),
+    ];
+
+    fn wait_stream_key(&self, queue_name: &str, disc: i32, lifo: bool) -> String {
+        if lifo {
+            format!(
+                "{}:queue:{}:waitl:p{}",
+                self.options.key_prefix, queue_name, disc
+            )
+        } else {
+            format!(
+                "{}:queue:{}:wait:p{}",
+                self.options.key_prefix, queue_name, disc
+            )
+        }
+    }
+
+    fn wait_legacy_key(&self, queue_name: &str) -> String {
+        format!("{}:queue:{}:wait", self.options.key_prefix, queue_name)
+    }
+
+    fn claim_wait_key_chain(&self, queue_name: &str) -> Vec<String> {
+        let mut v = Vec::with_capacity(9);
+        for &(disc, lifo) in &Self::WAIT_BUCKET_ORDER {
+            v.push(self.wait_stream_key(queue_name, disc, lifo));
+        }
+        v.push(self.wait_legacy_key(queue_name));
+        v
+    }
+
+    async fn push_job_to_wait(
+        &self,
+        conn: &mut ConnectionManager,
+        queue_name: &str,
+        job_id_str: &str,
+        disc: i32,
+        lifo: bool,
+    ) -> Result<()> {
+        let key = self.wait_stream_key(queue_name, disc, lifo);
+        if lifo {
+            let _: () = conn
+                .rpush::<_, _, ()>(&key, job_id_str)
+                .await
+                .map_err(ChainMQError::Redis)?;
+        } else {
+            let _: () = conn
+                .lpush::<_, _, ()>(&key, job_id_str)
+                .await
+                .map_err(ChainMQError::Redis)?;
+        }
+        Ok(())
+    }
+
+    async fn lrem_from_all_wait_streams(
+        &self,
+        conn: &mut ConnectionManager,
+        queue_name: &str,
+        id_str: &str,
+    ) -> Result<()> {
+        for k in self.claim_wait_key_chain(queue_name) {
+            let _: () = conn
+                .lrem::<_, _, ()>(&k, 0, id_str)
+                .await
+                .map_err(ChainMQError::Redis)?;
+        }
+        Ok(())
+    }
+
+    async fn publish_queue_event(
+        &self,
+        queue_name: &str,
+        event_type: &str,
+        job_id: &JobId,
+        detail: Option<&str>,
+    ) {
+        let mut body = serde_json::json!({
+            "type": event_type,
+            "jobId": job_id.to_string(),
+        });
+        if let Some(d) = detail {
+            body["detail"] = serde_json::Value::String(d.to_string());
+        }
+        let payload = match serde_json::to_string(&body) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::debug!(error = %e, "queue event serialize failed");
+                return;
+            }
+        };
+        let mut conn = self.async_conn.clone();
+        if let Err(e) = conn
+            .publish::<_, _, ()>(self.events_channel(queue_name), payload)
+            .await
+        {
+            tracing::debug!(error = %e, "queue event publish failed");
+        }
+    }
+
+    pub(crate) async fn save_job_metadata(
+        &self,
+        job_id: &JobId,
+        metadata: &JobMetadata,
+    ) -> Result<()> {
         let mut conn = self.async_conn.clone();
         let job_key = self.job_key(job_id);
         let json = serde_json::to_string(metadata)?;
-        let _: () = conn
-            .hset::<_, _, _, ()>(&job_key, "metadata", json)
+        let disc = metadata.options.priority.redis_discriminant();
+        let lifo = if metadata.options.lifo { "1" } else { "0" };
+        redis::pipe()
+            .atomic()
+            .hset(&job_key, "metadata", json.as_str())
+            .hset(&job_key, "priority", disc)
+            .hset(&job_key, "enqueue_lifo", lifo)
+            .query_async::<()>(&mut conn)
             .await
             .map_err(ChainMQError::Redis)?;
         Ok(())
@@ -99,16 +226,20 @@ impl Queue {
     pub async fn requeue_claimed_job(&self, job_id: &JobId, queue_name: &str) -> Result<()> {
         let mut conn = self.async_conn.clone();
         let active_key = self.active_key(queue_name);
-        let wait_key = self.wait_key(queue_name);
 
         let _: i32 = conn
             .srem::<_, _, i32>(&active_key, job_id.to_string())
             .await
             .map_err(ChainMQError::Redis)?;
-        let _: () = conn
-            .lpush::<_, _, ()>(&wait_key, job_id.to_string())
-            .await
-            .map_err(ChainMQError::Redis)?;
+
+        let id_str = job_id.to_string();
+        let (disc, lifo) = if let Some(m) = self.get_job(job_id).await? {
+            (m.options.priority.redis_discriminant(), m.options.lifo)
+        } else {
+            (Priority::Normal.redis_discriminant(), false)
+        };
+        self.push_job_to_wait(&mut conn, queue_name, &id_str, disc, lifo)
+            .await?;
 
         if let Some(mut metadata) = self.get_job(job_id).await? {
             metadata.state = JobState::Waiting;
@@ -156,6 +287,7 @@ impl Queue {
             last_error: None,
             worker_id: None,
             response: None,
+            progress: None,
         };
 
         let mut conn = self.async_conn.clone();
@@ -168,6 +300,8 @@ impl Queue {
         if !inserted {
             return Err(ChainMQError::DuplicateJobId(job_id));
         }
+
+        self.save_job_metadata(&job_id, &metadata).await?;
 
         let qname = T::queue_name();
         let registry_key = self.queues_registry_key();
@@ -184,11 +318,10 @@ impl Queue {
                 .await
                 .map_err(ChainMQError::Redis)?;
         } else {
-            let wait_key = self.wait_key(qname);
-            let _: () = conn
-                .lpush::<_, _, ()>(&wait_key, job_id.to_string())
-                .await
-                .map_err(ChainMQError::Redis)?;
+            let disc = metadata.options.priority.redis_discriminant();
+            let lifo = metadata.options.lifo;
+            self.push_job_to_wait(&mut conn, qname, &job_id.to_string(), disc, lifo)
+                .await?;
         }
 
         Ok(job_id)
@@ -251,16 +384,15 @@ impl Queue {
 
     /// Claim next job for processing
     pub async fn claim_job(&self, queue_name: &str, worker_id: &str) -> Result<Option<JobId>> {
-        let wait_key = self.wait_key(queue_name);
+        let chain = self.claim_wait_key_chain(queue_name);
         let active_key = self.active_key(queue_name);
 
-        let result: Option<String> = self
-            .scripts
-            .claim_job
-            .key(&wait_key)
-            .key(&active_key)
-            .invoke_async(&mut self.async_conn.clone())
-            .await?;
+        let mut inv = self.scripts.claim_job.key(&chain[0]);
+        for k in chain.iter().skip(1) {
+            inv.key(k);
+        }
+        inv.key(&active_key);
+        let result: Option<String> = inv.invoke_async(&mut self.async_conn.clone()).await?;
 
         match result {
             Some(job_id_str) => {
@@ -278,6 +410,15 @@ impl Queue {
 
     /// Complete a job successfully. `response` is stored on the job metadata (e.g. from
     /// [`crate::JobContext::set_response`]) and visible in the dashboard API.
+    ///
+    /// If the job is already [`JobState::Failed`] or [`JobState::Completed`], returns `Ok` after
+    /// best-effort removal from the active set only. This avoids worker errors when
+    /// [`Self::fail_job`] or another path finished the job while the worker was still running `perform`.
+    ///
+    /// Otherwise removes the id from wait, active, delayed, failed, and completed lists for
+    /// `queue_name` before recording completion so delayed or waiting jobs can be completed
+    /// without leaving stale ids in the delayed zset or wait list. Clears [`crate::JobMetadata::last_error`]
+    /// and [`crate::JobMetadata::failed_at`] so a successful completion does not show stale errors in the UI.
     pub async fn complete_job(
         &self,
         job_id: &JobId,
@@ -290,14 +431,48 @@ impl Queue {
         };
 
         let mut conn = self.async_conn.clone();
-        let job_key = self.job_key(job_id);
         let active_key = self.active_key(queue_name);
+        let id_str = job_id.to_string();
+
+        if matches!(metadata.state, JobState::Failed | JobState::Completed) {
+            let _: () = conn
+                .srem::<_, _, ()>(&active_key, &id_str)
+                .await
+                .map_err(ChainMQError::Redis)?;
+            return Ok(());
+        }
+
+        let job_key = self.job_key(job_id);
+        let delayed_key = self.delayed_key(queue_name);
+        let failed_key = self.failed_key(queue_name);
         let completed_key = self.completed_key(queue_name);
+
+        self.lrem_from_all_wait_streams(&mut conn, queue_name, &id_str)
+            .await?;
+        let _: () = conn
+            .srem::<_, _, ()>(&active_key, &id_str)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        let _: () = conn
+            .zrem::<_, _, ()>(&delayed_key, &id_str)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        let _: () = conn
+            .lrem::<_, _, ()>(&failed_key, 0, &id_str)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        let _: () = conn
+            .lrem::<_, _, ()>(&completed_key, 0, &id_str)
+            .await
+            .map_err(ChainMQError::Redis)?;
 
         let now = Utc::now();
         metadata.state = JobState::Completed;
         metadata.completed_at = Some(now);
         metadata.response = response;
+        // Clear any stale failure fields (e.g. mistaken fail_job before run, or after retries).
+        metadata.last_error = None;
+        metadata.failed_at = None;
 
         let metadata_json = serde_json::to_string(&metadata)?;
         let _: () = conn
@@ -306,26 +481,62 @@ impl Queue {
             .map_err(ChainMQError::Redis)?;
 
         let _: () = conn
-            .srem::<_, _, ()>(&active_key, job_id.to_string())
+            .lpush::<_, _, ()>(&completed_key, &id_str)
             .await
             .map_err(ChainMQError::Redis)?;
 
-        let _: () = conn
-            .lpush::<_, _, ()>(&completed_key, job_id.to_string())
-            .await
-            .map_err(ChainMQError::Redis)?;
+        if let Some(max) = self.options.max_completed_len {
+            if max > 0 {
+                let _: () = conn
+                    .ltrim(&completed_key, 0, (max as isize).saturating_sub(1))
+                    .await
+                    .map_err(ChainMQError::Redis)?;
+            }
+        }
 
-        let _: () = conn
-            .ltrim(&completed_key, 0, 999)
-            .await
-            .map_err(ChainMQError::Redis)?;
+        self.publish_queue_event(queue_name, "completed", job_id, None)
+            .await;
 
         Ok(())
     }
 
-    /// Fail a job and potentially retry or move to failed queue.
-    /// Loads the latest metadata from Redis (queue name, attempt count, retry options, backoff).
-    pub async fn fail_job(&self, job_id: &JobId, error: &str) -> Result<()> {
+    /// Remove `id_str` from wait, active, delayed, failed, and completed structures for `queue_name`.
+    async fn detach_job_from_all_queue_lists(
+        &self,
+        conn: &mut ConnectionManager,
+        queue_name: &str,
+        id_str: &str,
+    ) -> Result<()> {
+        let active_key = self.active_key(queue_name);
+        let delayed_key = self.delayed_key(queue_name);
+        let failed_key = self.failed_key(queue_name);
+        let completed_key = self.completed_key(queue_name);
+
+        self.lrem_from_all_wait_streams(conn, queue_name, id_str)
+            .await?;
+        let _: () = conn
+            .srem::<_, _, ()>(&active_key, id_str)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        let _: () = conn
+            .zrem::<_, _, ()>(&delayed_key, id_str)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        let _: () = conn
+            .lrem::<_, _, ()>(&failed_key, 0, id_str)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        let _: () = conn
+            .lrem::<_, _, ()>(&completed_key, 0, id_str)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        Ok(())
+    }
+
+    /// Record a failed `perform` and either schedule a retry (delayed) or move to the failed list.
+    /// The worker calls this when `perform` returns `Err`. For a **terminal** failure from your
+    /// own code (for example right after enqueue), use [`Queue::fail_job`] instead.
+    pub async fn fail_after_perform_error(&self, job_id: &JobId, error: &str) -> Result<()> {
         let mut meta = match self.get_job(job_id).await? {
             Some(m) => m,
             None => return Err(ChainMQError::JobNotFound(job_id.clone())),
@@ -333,11 +544,17 @@ impl Queue {
 
         let queue_name = meta.queue_name.clone();
         let mut conn = self.async_conn.clone();
-        let active_key = self.active_key(&queue_name);
+        let id_str = job_id.to_string();
+        self.detach_job_from_all_queue_lists(&mut conn, &queue_name, &id_str)
+            .await?;
+
         let new_attempts = meta.attempts + 1;
         meta.attempts = new_attempts;
         meta.last_error = Some(error.to_string());
         meta.failed_at = Some(Utc::now());
+
+        let delayed_key = self.delayed_key(&queue_name);
+        let failed_key = self.failed_key(&queue_name);
 
         if new_attempts < meta.options.attempts {
             let delay = meta.options.backoff.calculate_delay(new_attempts);
@@ -346,26 +563,80 @@ impl Queue {
 
             self.save_job_metadata(job_id, &meta).await?;
 
-            let delayed_key = self.delayed_key(&queue_name);
             let _: () = conn
-                .zadd::<_, _, _, ()>(&delayed_key, job_id.to_string(), execute_at)
+                .zadd::<_, _, _, ()>(&delayed_key, &id_str, execute_at)
                 .await
                 .map_err(ChainMQError::Redis)?;
         } else {
             meta.state = JobState::Failed;
             self.save_job_metadata(job_id, &meta).await?;
 
-            let failed_key = self.failed_key(&queue_name);
             let _: () = conn
-                .lpush::<_, _, ()>(&failed_key, job_id.to_string())
+                .lpush::<_, _, ()>(&failed_key, &id_str)
                 .await
                 .map_err(ChainMQError::Redis)?;
+
+            if let Some(max) = self.options.max_failed_len {
+                if max > 0 {
+                    let _: () = conn
+                        .ltrim(&failed_key, 0, (max as isize).saturating_sub(1))
+                        .await
+                        .map_err(ChainMQError::Redis)?;
+                }
+            }
+
+            self.publish_queue_event(&queue_name, "failed", job_id, Some(error))
+                .await;
         }
 
+        Ok(())
+    }
+
+    /// Permanently move a job to the **failed** state and failed list.
+    ///
+    /// Works from any prior state (waiting, active, delayed, **completed**, or already failed):
+    /// clears completion fields, increments attempts, sets `last_error`, and records the job on
+    /// the failed queue. Does **not** apply retry/backoff (the worker uses an internal path when
+    /// `perform` returns `Err` to schedule retries or terminal failure).
+    pub async fn fail_job(&self, job_id: &JobId, error: &str) -> Result<()> {
+        let mut meta = match self.get_job(job_id).await? {
+            Some(m) => m,
+            None => return Err(ChainMQError::JobNotFound(job_id.clone())),
+        };
+
+        let queue_name = meta.queue_name.clone();
+        let mut conn = self.async_conn.clone();
+        let id_str = job_id.to_string();
+        self.detach_job_from_all_queue_lists(&mut conn, &queue_name, &id_str)
+            .await?;
+
+        meta.attempts = meta.attempts.saturating_add(1);
+        meta.last_error = Some(error.to_string());
+        meta.failed_at = Some(Utc::now());
+        meta.state = JobState::Failed;
+        meta.completed_at = None;
+        meta.response = None;
+        meta.started_at = None;
+        meta.worker_id = None;
+
+        let failed_key = self.failed_key(&queue_name);
+        self.save_job_metadata(job_id, &meta).await?;
         let _: () = conn
-            .srem::<_, _, ()>(&active_key, job_id.to_string())
+            .lpush::<_, _, ()>(&failed_key, &id_str)
             .await
             .map_err(ChainMQError::Redis)?;
+
+        if let Some(max) = self.options.max_failed_len {
+            if max > 0 {
+                let _: () = conn
+                    .ltrim(&failed_key, 0, (max as isize).saturating_sub(1))
+                    .await
+                    .map_err(ChainMQError::Redis)?;
+            }
+        }
+
+        self.publish_queue_event(&queue_name, "failed", job_id, Some(error))
+            .await;
 
         Ok(())
     }
@@ -374,10 +645,11 @@ impl Queue {
     pub async fn get_stats(&self, queue_name: &str) -> Result<QueueStats> {
         let mut conn = self.async_conn.clone();
 
-        let wait_len: usize = conn
-            .llen(self.wait_key(queue_name))
-            .await
-            .map_err(ChainMQError::Redis)?;
+        let mut wait_len: usize = 0;
+        for k in self.claim_wait_key_chain(queue_name) {
+            let len: usize = conn.llen(&k).await.map_err(ChainMQError::Redis)?;
+            wait_len += len;
+        }
         let active_len: usize = conn
             .scard(self.active_key(queue_name))
             .await
@@ -438,10 +710,16 @@ impl Queue {
         let limit = limit.unwrap_or(100);
         let job_ids: Vec<String> = match state {
             JobState::Waiting => {
-                let wait_key = self.wait_key(queue_name);
-                conn.lrange(&wait_key, 0, (limit - 1) as isize)
-                    .await
-                    .map_err(ChainMQError::Redis)?
+                let mut collected: Vec<String> = Vec::new();
+                for k in self.claim_wait_key_chain(queue_name) {
+                    let part: Vec<String> =
+                        conn.lrange(&k, 0, -1).await.map_err(ChainMQError::Redis)?;
+                    collected.extend(part);
+                    if collected.len() >= limit {
+                        break;
+                    }
+                }
+                collected.into_iter().take(limit).collect()
             }
             JobState::Active => {
                 let active_key = self.active_key(queue_name);
@@ -490,14 +768,20 @@ impl Queue {
 
                 let is_in_expected_list = match state {
                     JobState::Waiting => {
-                        let wait_key = self.wait_key(queue_name);
-                        let list: Vec<String> = self
-                            .async_conn
-                            .clone()
-                            .lrange(&wait_key, 0, -1)
-                            .await
-                            .map_err(ChainMQError::Redis)?;
-                        list.contains(&job_id_str)
+                        let mut found = false;
+                        for k in self.claim_wait_key_chain(queue_name) {
+                            let list: Vec<String> = self
+                                .async_conn
+                                .clone()
+                                .lrange(&k, 0, -1)
+                                .await
+                                .map_err(ChainMQError::Redis)?;
+                            if list.contains(&job_id_str) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        found
                     }
                     JobState::Active => {
                         let active_key = self.active_key(queue_name);
@@ -609,6 +893,23 @@ impl Queue {
             }
         }
 
+        for pattern in [
+            format!("{}:queue:*:wait:p*", self.options.key_prefix),
+            format!("{}:queue:*:waitl:p*", self.options.key_prefix),
+        ] {
+            let keys = self.scan_match(&pattern).await?;
+            let qp = format!("{}:queue:", self.options.key_prefix);
+            for key in keys {
+                if let Some(rest) = key.strip_prefix(&qp) {
+                    if let Some((name, _)) = rest.split_once(":wait:p") {
+                        queues.insert(name.to_string());
+                    } else if let Some((name, _)) = rest.split_once(":waitl:p") {
+                        queues.insert(name.to_string());
+                    }
+                }
+            }
+        }
+
         Ok(queues.into_iter().collect())
     }
 
@@ -622,16 +923,15 @@ impl Queue {
         let mut conn = self.async_conn.clone();
         let job_key = self.job_key(job_id);
         let failed_key = self.failed_key(queue_name);
-        let wait_key = self.wait_key(queue_name);
 
         let _: () = conn
             .lrem::<_, _, ()>(&failed_key, 0, job_id.to_string())
             .await
             .map_err(ChainMQError::Redis)?;
-        let _: () = conn
-            .lpush::<_, _, ()>(&wait_key, job_id.to_string())
-            .await
-            .map_err(ChainMQError::Redis)?;
+        let disc = metadata.options.priority.redis_discriminant();
+        let lifo = metadata.options.lifo;
+        self.push_job_to_wait(&mut conn, queue_name, &job_id.to_string(), disc, lifo)
+            .await?;
 
         metadata.state = JobState::Waiting;
         metadata.last_error = None;
@@ -650,16 +950,13 @@ impl Queue {
         let mut conn = self.async_conn.clone();
         let job_key = self.job_key(job_id);
 
-        let wait_key = self.wait_key(queue_name);
         let active_key = self.active_key(queue_name);
         let delayed_key = self.delayed_key(queue_name);
         let failed_key = self.failed_key(queue_name);
         let completed_key = self.completed_key(queue_name);
 
-        let _: () = conn
-            .lrem::<_, _, ()>(&wait_key, 0, job_id.to_string())
-            .await
-            .map_err(ChainMQError::Redis)?;
+        self.lrem_from_all_wait_streams(&mut conn, queue_name, &job_id.to_string())
+            .await?;
         let _: () = conn
             .srem::<_, _, ()>(&active_key, job_id.to_string())
             .await
@@ -728,10 +1025,6 @@ impl Queue {
         format!("{}:job:{}:logs", self.options.key_prefix, job_id)
     }
 
-    fn wait_key(&self, queue_name: &str) -> String {
-        format!("{}:queue:{}:wait", self.options.key_prefix, queue_name)
-    }
-
     fn active_key(&self, queue_name: &str) -> String {
         format!("{}:queue:{}:active", self.options.key_prefix, queue_name)
     }
@@ -756,7 +1049,6 @@ impl Queue {
     ) -> Result<usize> {
         let mut conn = self.async_conn.clone();
         let active_key = self.active_key(queue_name);
-        let wait_key = self.wait_key(queue_name);
 
         let active_job_ids: Vec<String> = conn
             .smembers(&active_key)
@@ -813,10 +1105,10 @@ impl Queue {
                             continue;
                         }
 
-                        let _: () = update_con
-                            .lpush::<_, _, ()>(&wait_key, job_id_str.clone())
-                            .await
-                            .map_err(ChainMQError::Redis)?;
+                        let disc = metadata.options.priority.redis_discriminant();
+                        let lifo = metadata.options.lifo;
+                        self.push_job_to_wait(&mut update_con, queue_name, &job_id_str, disc, lifo)
+                            .await?;
 
                         let mut updated_metadata = metadata;
                         updated_metadata.state = JobState::Waiting;

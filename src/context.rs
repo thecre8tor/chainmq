@@ -1,6 +1,7 @@
 // src/context.rs
-use crate::{JobId, JobMetadata};
+use crate::{ChainMQError, JobId, JobMetadata, Queue, Result};
 use std::sync::{Arc, Mutex};
+use tokio_util::sync::CancellationToken;
 use tracing::Span;
 
 /// Application context containing shared resources
@@ -15,11 +16,19 @@ pub struct JobContext {
     pub job_metadata: JobMetadata,
     pub app_context: Arc<dyn AppContext>,
     pub span: Span,
+    queue: Arc<Queue>,
+    cancel: CancellationToken,
     response: Arc<Mutex<Option<serde_json::Value>>>,
 }
 
 impl JobContext {
-    pub fn new(job_id: JobId, job_metadata: JobMetadata, app_context: Arc<dyn AppContext>) -> Self {
+    pub fn new(
+        job_id: JobId,
+        job_metadata: JobMetadata,
+        app_context: Arc<dyn AppContext>,
+        queue: Arc<Queue>,
+        cancel: CancellationToken,
+    ) -> Self {
         let span = tracing::info_span!(
             "job_execution",
             job_id = %job_id,
@@ -32,8 +41,32 @@ impl JobContext {
             job_metadata,
             app_context,
             span,
+            queue,
+            cancel,
             response: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Same Redis [`Queue`] instance the worker uses (BullMQ-style `job.queue`).
+    pub fn queue(&self) -> &Arc<Queue> {
+        &self.queue
+    }
+
+    /// Cooperative cancellation (similar to BullMQ’s `AbortSignal`). Poll with
+    /// [`CancellationToken::is_cancelled`] or `.cancelled().await`.
+    pub fn cancellation_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    /// Persist progress on this job’s metadata (visible in the dashboard API).
+    pub async fn set_progress(&self, value: serde_json::Value) -> Result<()> {
+        let mut meta = self
+            .queue
+            .get_job(&self.job_id)
+            .await?
+            .ok_or_else(|| ChainMQError::JobNotFound(self.job_id.clone()))?;
+        meta.progress = Some(value);
+        self.queue.save_job_metadata(&self.job_id, &meta).await
     }
 
     /// Attach a JSON-serializable result to this run. It is persisted on the job when it completes
