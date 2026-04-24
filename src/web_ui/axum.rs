@@ -1,6 +1,8 @@
 //! Nestable Axum router for the ChainMQ dashboard (no HTTP server in this crate).
 
+use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     Json, Router,
@@ -8,9 +10,13 @@ use axum::{
     extract::{OriginalUri, Path, Query, State},
     http::{HeaderValue, Request, StatusCode, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{
+        IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
     routing::{delete, get, post},
 };
+use futures::StreamExt;
 use cookie::SameSite;
 use tokio::sync::Mutex;
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -20,10 +26,10 @@ use tower_sessions_cookie_store::{CookieSessionConfig, CookieSessionManagerLayer
 use crate::Queue;
 
 use super::core::{
-    self, CleanQueueRequest, DeleteJobRequest, JobLogsQuery, LoginRequest, RetryJobRequest,
-    SESSION_AUTH_KEY, UiAssets, WebUIMountConfig, embedded_asset_rel_key, embedded_content_type,
-    full_path_for_embedded_request, is_ui_auth_public_route, json_reauth_value,
-    session_cookie_path, session_signing_key_material, verify_credentials,
+    self, CleanQueueRequest, DeleteJobRequest, JobLogsQuery, LoginRequest, QueueEventsQuery,
+    RetryJobRequest, SESSION_AUTH_KEY, UiAssets, WebUIMountConfig, embedded_asset_rel_key,
+    embedded_content_type, full_path_for_embedded_request, is_ui_auth_public_route,
+    json_reauth_value, session_cookie_path, session_signing_key_material, verify_credentials,
 };
 
 /// Application state for the dashboard (queue + auth + static URL prefix).
@@ -87,6 +93,12 @@ pub fn chainmq_dashboard_router(queue: Queue, config: WebUIMountConfig) -> std::
     let protected = Router::new()
         .route("/queues", get(get_queues_axum))
         .route("/queues/{queue_name}/stats", get(get_queue_stats_axum))
+        .route(
+            "/queues/{queue_name}/events/live",
+            get(get_queue_events_live_axum),
+        )
+        .route("/queues/{queue_name}/events", get(get_queue_events_axum))
+        .route("/redis/stats", get(get_redis_stats_axum))
         .route("/queues/{queue_name}/jobs/{state}", get(list_jobs_axum))
         .route("/jobs/{job_id}/logs", get(get_job_logs_axum))
         .route("/jobs/{job_id}", get(get_job_axum))
@@ -253,6 +265,70 @@ async fn get_queue_stats_axum(
     let q = st.queue.lock().await;
     let (status, json) = core::api_get_queue_stats(&*q, &queue_name).await;
     (status, Json(json))
+}
+
+async fn get_queue_events_axum(
+    State(st): State<WebUiState>,
+    Path(queue_name): Path<String>,
+    Query(qs): Query<QueueEventsQuery>,
+) -> impl IntoResponse {
+    let limit = qs.limit.unwrap_or(100).clamp(1, 500);
+    let q = st.queue.lock().await;
+    let (status, json) = core::api_list_queue_events(&*q, &queue_name, limit).await;
+    (status, Json(json))
+}
+
+async fn get_redis_stats_axum(State(st): State<WebUiState>) -> impl IntoResponse {
+    let q = st.queue.lock().await;
+    let (status, json) = core::api_get_redis_server_stats(&*q).await;
+    (status, Json(json))
+}
+
+async fn get_queue_events_live_axum(
+    State(st): State<WebUiState>,
+    Path(queue_name): Path<String>,
+) -> impl IntoResponse {
+    let (client_res, channel) = {
+        let g = st.queue.lock().await;
+        (g.redis_pubsub_client(), g.redis_events_channel(&queue_name))
+    };
+    let Ok(client) = client_res else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "Live queue events require Redis URL or Client (not ConnectionManager). Use GET …/events for history."
+            })),
+        )
+            .into_response();
+    };
+    let mut pubsub = match client.get_async_pubsub().await {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": format!("redis pubsub: {e}") })),
+            )
+                .into_response();
+        }
+    };
+    if let Err(e) = pubsub.subscribe(&channel).await {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": format!("redis subscribe: {e}") })),
+        )
+            .into_response();
+    }
+    let stream = pubsub.into_on_message().map(|msg| {
+        let payload: String = msg.get_payload().unwrap_or_default();
+        Ok::<Event, Infallible>(Event::default().data(payload))
+    });
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(25))
+                .text("keepalive"),
+        )
+        .into_response()
 }
 
 async fn list_jobs_axum(

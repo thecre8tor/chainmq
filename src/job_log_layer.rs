@@ -1,9 +1,10 @@
 //! `tracing` layer that appends events under the `job_execution` span to Redis
 //! (see [`crate::Queue::append_job_log_line`]).
 //!
-//! The worker installs this automatically (with `fmt` and `EnvFilter`) when no global
-//! subscriber is set yet. For a custom subscriber, register [`job_logs_layer`] yourself and use
-//! [`crate::WorkerBuilder::with_shared_queue`] with the same [`Arc<Queue>`].
+//! When [`crate::worker::WorkerConfig::tracing_job_logs`] is enabled, the worker may install this
+//! automatically (with `fmt` and `EnvFilter`) if no global subscriber is set yet. For a custom
+//! subscriber, register [`job_logs_layer`] yourself and use [`crate::WorkerBuilder::with_shared_queue`]
+//! with the same [`Arc<Queue>`].
 
 use crate::{JobId, JobLogLine, Queue};
 use chrono::SecondsFormat;
@@ -103,7 +104,8 @@ pub fn job_logs_layer(queue: Arc<Queue>) -> JobLogLayer {
 }
 
 /// If no global tracing subscriber is installed, sets one: `EnvFilter` (`RUST_LOG` or `info`),
-/// stdout `fmt`, and [`job_logs_layer`] for this queue. Called from [`crate::Worker`] startup.
+/// stdout `fmt`, and [`job_logs_layer`] for this queue. Called from [`crate::Worker`] startup when
+/// [`crate::worker::WorkerConfig::tracing_job_logs`] is `true`.
 pub(crate) fn install_default_subscriber_with_job_logs_if_unset(queue: Arc<Queue>) {
     use tracing_subscriber::prelude::*;
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()

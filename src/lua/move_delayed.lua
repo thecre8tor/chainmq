@@ -38,7 +38,4 @@ for _, job_id in ipairs(jobs) do
     end
 end
 
-redis.call('publish', prefix .. ':events:' .. queue_name,
-    string.format('{"type":"delayed_moved","count":%d,"timestamp":%d}', #jobs, now))
-
 return table.concat(jobs, ",")

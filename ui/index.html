@@ -15,7 +15,7 @@
       href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="styles.css?v=chainmq-ui-36" />
+    <link rel="stylesheet" href="styles.css?v=chainmq-ui-46" />
   </head>
   <body>
     <div
@@ -259,6 +259,27 @@
                     <polyline points="12 6 12 12 16 14" />
                   </svg>
                   Process Delayed
+                </button>
+                <button
+                  type="button"
+                  id="redisStatsBtn"
+                  class="btn btn-secondary btn-icon"
+                  title="Redis server memory and health"
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    aria-hidden="true"
+                  >
+                    <ellipse cx="12" cy="5" rx="9" ry="3" />
+                    <path d="M3 5v7c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+                    <path d="M3 12v7c0 1.66 4 3 9 3s9-1.34 9-3v-7" />
+                  </svg>
+                  Redis
                 </button>
                 <button
                   id="recoverStalledBtn"
@@ -658,6 +679,46 @@
       </main>
     </div>
 
-    <script src="app.js?v=chainmq-ui-27"></script>
+    <div
+      id="redisModalOverlay"
+      class="redis-modal-overlay"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="redisModalTitle"
+    >
+      <div class="redis-modal" role="document">
+        <header class="redis-modal__head">
+          <h2 id="redisModalTitle" class="redis-modal__title">Redis</h2>
+          <button
+            type="button"
+            class="redis-modal__close icon-btn"
+            id="redisModalCloseBtn"
+            aria-label="Close"
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              aria-hidden="true"
+            >
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </header>
+        <p class="redis-modal__lede job-detail-muted">
+          Shared instance behind this dashboard (not per-queue job counts).
+        </p>
+        <div
+          id="queueRedisStatsBody"
+          class="redis-infra__body redis-modal__panel"
+        ></div>
+      </div>
+    </div>
+
+    <script src="app.js?v=chainmq-ui-44"></script>
   </body>
 </html>

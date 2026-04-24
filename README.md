@@ -15,7 +15,8 @@ This crate is library-first. Runnable examples demonstrate typical patterns (sin
 - 🗄️ Backoff strategies: Configurable retry logic for failed jobs
 - 📊 Application Context: Share application state across jobs
 - 🖥️ Web UI: Dashboard for monitoring and managing queues (one server sees every logical queue under the same Redis `key_prefix`; see [README_UI.md](./README_UI.md))
-- 📝 Job execution logs: optional Redis-backed log lines for the dashboard when using `tracing` and the job-log layer (documented in README_UI.md)
+- 📜 Queue lifecycle events (Redis Stream + pub/sub) and dashboard **Activity** + **Redis** modal (`INFO` snapshot; documented in README_UI.md)
+- 📝 Optional Redis-backed job log lines when the worker opts in to `tracing_job_logs` and the job-log layer (README_UI.md)
 
 ### Web dashboard (responsive)
 
@@ -35,7 +36,7 @@ Add ChainMQ to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-chainmq = "1.2.1"
+chainmq = "1.3.0"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 async-trait = "0.1"
@@ -211,7 +212,7 @@ cargo build --examples
 Run Redis first, then use separate terminals for workers and enqueuers:
 
 ```bash
-# Single worker for the emails queue (tracing → Redis job logs for the web UI)
+# Single worker for the emails queue (enables tracing → Redis job logs like the web UI example)
 cargo run --example worker_main
 
 # Enqueue email jobs (normal + delayed / high priority); optional UI entrypoint at end of file

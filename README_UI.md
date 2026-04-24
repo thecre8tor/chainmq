@@ -1,6 +1,6 @@
 # ChainMQ Web UI
 
-The ChainMQ Web UI provides a modern, BullMQ-style dashboard for monitoring and managing your job queues. Use **one** [`Queue`](https://docs.rs/chainmq/latest/chainmq/struct.Queue.html) configured for your Redis instance and `key_prefix`; it lists and manages **every** logical queue name (`Job::queue_name()`) in that namespace.
+The ChainMQ Web UI provides a modern dashboard for monitoring and managing your job queues. Use **one** [`Queue`](https://docs.rs/chainmq/latest/chainmq/struct.Queue.html) configured for your Redis instance and `key_prefix`; it lists and manages **every** logical queue name (`Job::queue_name()`) in that namespace.
 
 The library **does not start an HTTP server**. You choose the host, port, and TLS on your Axum or Actix app, then **mount** the dashboard routes at your chosen base path.
 
@@ -13,11 +13,13 @@ The library **does not start an HTTP server**. You choose the host, port, and TL
 - ⚡ Queue actions (clean, recover stalled, process delayed)
 - 🔄 Auto-refresh every 3 seconds
 - 📱 Responsive design
-- 📝 Per-job execution logs (when workers use `job_logs_layer`; see [Job execution logs](#job-execution-logs))
+- 📜 Per-job **Activity** tab (queue events stream; see [Lifecycle events](#lifecycle-events))
+- 🖥️ **Redis** button on the queue toolbar opens a modal with memory / `INFO` snapshot (used vs cap or host RAM), distinct from per-queue job counts
+- 📝 Optional per-job execution logs via `tracing` + `job_logs_layer` when enabled on the worker ([Job execution logs](#job-execution-logs-opt-in))
 
 ## Responsive layout
 
-The UI scales from **desktop** (persistent sidebar, wide tables, multi-column job detail) to **mobile** (top chrome with menu drawer, stacked stat cards, single-column job detail and logs). Source files for the dashboard live under [`ui/`](./ui/) in this repository; at **compile time** they are embedded into the `chainmq` library binary (see [UI files](#ui-files)).
+The UI scales from **desktop** (persistent sidebar, wide tables, multi-column job detail) to **mobile** (top chrome with menu drawer, stacked stat cards, single-column job detail and activity). Source files for the dashboard live under [`ui/`](./ui/) in this repository; at **compile time** they are embedded into the `chainmq` library binary (see [UI files](#ui-files)).
 
 |                                        Desktop — queue                                         |                                      Desktop — job detail                                       |
 | :--------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------: |
@@ -39,13 +41,13 @@ Smaller builds without any dashboard:
 
 ```toml
 [dependencies]
-chainmq = { version = "1.2.1", default-features = false }
+chainmq = { version = "1.3.0", default-features = false }
 ```
 
 Actix-only consumers:
 
 ```toml
-chainmq = { version = "1.2.1", default-features = false, features = ["web-ui-actix"] }
+chainmq = { version = "1.3.0", default-features = false, features = ["web-ui-actix"] }
 ```
 
 ### 2. Axum: mount the router
@@ -97,13 +99,34 @@ Enable **`web-ui-actix`**, share one `Arc<tokio::sync::Mutex<Queue>>` across wor
 
 Use the URL your server prints (for example `http://127.0.0.1:8080/dashboard/` when nested at `/dashboard` on port 8080). Unless you set `WebUIMountConfig { auth: None, .. }`, sign-in defaults are **`ChainMQ`** / **`ChainMQ`** until you override `auth`. JSON lives under `{ui_path}/api/...`; those routes are **not** a supported public HTTP API (same-origin browser fetches only).
 
-## Job execution logs
+## Lifecycle events
 
-The **Logs** tab on a job reads lines stored in **Redis** (same instance and key prefix as the queue), loaded by the dashboard over its internal JSON routes. They are **not** captured from `println!` or raw stdout: with concurrent jobs in one process, stdout is global and cannot be attributed per job. Use **`tracing`** (`info!`, `debug!`, etc.) inside your job’s `perform` while the worker has entered the `job_execution` span (the library does this around your handler).
+Primary observability: each logical queue appends JSON to a capped Redis Stream and publishes the **same JSON string** on `{key_prefix}:events:{queue_name}`.
 
-**Default:** when you start a `Worker` and the process has **no** global `tracing` subscriber yet, ChainMQ installs one: `EnvFilter` (from `RUST_LOG`, else `info`), stdout formatting, and **`job_logs_layer`** for that worker’s queue. No extra setup is required (see [`examples/worker_main.rs`](./examples/worker_main.rs)).
+- **Stream key:** `{key_prefix}:events:{queue_name}:stream` (approximate length `QueueOptions::events_stream_max_len`, `XADD MAXLEN ~`).
+- **Event payload:** JSON object with at least `type` and `ts` (milliseconds); optional `jobId`, `data`, `detail` depending on the event.
 
-**Custom subscriber:** if you call `tracing_subscriber::…::init()` (or equivalent) **before** `WorkerBuilder::spawn`, you must add **`chainmq::job_logs_layer`** yourself and pass the same **`Arc<Queue>`** via **`WorkerBuilder::with_shared_queue`**, so the layer and the worker share one queue handle.
+Internal dashboard routes (session-protected when auth is on):
+
+| Method | Path (under `{ui_path}/api`)            | Purpose                                                                                                                                                                                           |
+| ------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/queues/{queue_name}/events?limit=100` | Recent events (newest first) from the stream                                                                                                                                                      |
+| `GET`  | `/queues/{queue_name}/events/live`      | **SSE** (`text/event-stream`): subscribe to the pub/sub channel for live JSON lines                                                                                                               |
+| `GET`  | `/redis/stats`                          | Whitelisted `INFO` fields for the **shared** instance (includes `used_memory` / `used_memory_human`, `maxmemory`, `total_system_memory`, `used_memory_rss`, version, uptime, clients, ops/sec, …) |
+
+**SSE caveat:** `events/live` is for custom dashboards or tools that open an [`EventSource`](https://developer.mozilla.org/en-US/docs/Web/API/EventSource); it needs a dedicated Redis pub/sub connection from a [`redis::Client`](https://docs.rs/redis/latest/redis/struct.Client.html). If the app’s [`Queue`](https://docs.rs/chainmq/latest/chainmq/struct.Queue.html) was built with [`RedisClient::Manager`](https://docs.rs/chainmq/latest/chainmq/enum.RedisClient.html), the history endpoint still works; the live route returns **503** with JSON. Prefer `RedisClient::Url` or `Client` if you embed live SSE.
+
+The UI polls queue job counts every few seconds. **`GET /redis/stats`** is called when you open the **Redis** modal (fresh fetch each time you open it).
+
+## Job execution logs (opt-in)
+
+Redis-backed **tracing** log lines for the optional `GET …/jobs/{id}/logs` API are **not** captured from `println!` or raw stdout. Use **`tracing`** (`info!`, `debug!`, etc.) inside `perform` while the worker has entered the `job_execution` span.
+
+**Default:** workers do **not** install a global subscriber or `job_logs_layer`. Use queue/stream events and the **Activity** tab first.
+
+**Enable Redis job logs:** call **`WorkerBuilder::with_tracing_job_logs(true)`** (or set **`WorkerConfig::tracing_job_logs`**) so that, when the process still has no global `tracing` subscriber at worker creation, ChainMQ installs `EnvFilter` (from `RUST_LOG`, else `info`), stdout formatting, and **`job_logs_layer`** for that worker’s queue. See [`examples/worker_main.rs`](./examples/worker_main.rs).
+
+**Custom subscriber:** if you call `tracing_subscriber::…::init()` **before** `WorkerBuilder::spawn`, you must add **`chainmq::job_logs_layer`** yourself and pass the same **`Arc<Queue>`** via **`WorkerBuilder::with_shared_queue`**, so the layer and the worker share one queue handle.
 
 Optional: cap retention with **`QueueOptions::job_logs_max_lines`** (default `500`). Logs for a job are removed when the job row is deleted.
 

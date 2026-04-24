@@ -16,8 +16,8 @@ struct EmailJob {
 #[async_trait]
 impl Job for EmailJob {
     async fn perform(&self, ctx: &JobContext) -> Result<()> {
-        // `tracing` events here are stored in Redis and shown in the web UI Job → Logs tab
-        // (the worker installs `job_logs_layer` if you have not set a global subscriber).
+        // With `WorkerBuilder::with_tracing_job_logs(true)`, tracing events are stored in Redis
+        // for the optional job-logs API. Primary observability is queue lifecycle events in the UI.
         // `println!` is not captured.
         info!(
             to = %self.to,
@@ -91,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
         .with_app_context(app_state)
         .with_concurrency(concurrency)
         .with_queue_name(EmailJob::queue_name())
+        // .with_tracing_job_logs(true)
         .spawn()
         .await?;
 

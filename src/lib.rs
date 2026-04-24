@@ -1,7 +1,7 @@
 // src/lib.rs
 //! ChainMQ: A Redis-backed job queue for Rust
 //!
-//! Inspired by BullMQ, this crate provides type-safe job queues with
+//! This crate provides type-safe job queues with
 //! Redis persistence, delayed execution, retries, and monitoring.
 
 pub mod backoff;

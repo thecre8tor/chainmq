@@ -436,3 +436,64 @@ async fn set_progress_persisted_on_metadata() {
         Some(serde_json::json!({ "pct": 42, "step": "x" }))
     );
 }
+
+#[tokio::test]
+#[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
+async fn lifecycle_events_in_stream() {
+    let queue = Queue::new(opts()).await.expect("queue new");
+    let id = queue.enqueue(TestJob { v: 7 }).await.expect("enqueue");
+    let ev = queue
+        .read_queue_events("integration_q", 50)
+        .await
+        .expect("read");
+    assert!(
+        ev.iter().any(|e| e["type"] == "waiting" && e["jobId"] == id.to_string()),
+        "expected waiting event, got {ev:?}"
+    );
+
+    queue
+        .claim_job("integration_q", "w1")
+        .await
+        .expect("claim");
+    let ev2 = queue
+        .read_queue_events("integration_q", 50)
+        .await
+        .expect("read");
+    assert!(
+        ev2
+            .iter()
+            .any(|e| e["type"] == "active" && e["jobId"] == id.to_string()),
+        "expected active event, got {ev2:?}"
+    );
+
+    queue
+        .complete_job(&id, "integration_q", None)
+        .await
+        .expect("complete");
+    let ev3 = queue
+        .read_queue_events("integration_q", 50)
+        .await
+        .expect("read");
+    assert!(
+        ev3.iter().any(
+            |e| e["type"] == "completed" && e["jobId"] == id.to_string()
+        ),
+        "expected completed event, got {ev3:?}"
+    );
+
+    let id2 = queue.enqueue(TestJob { v: 8 }).await.expect("enqueue2");
+    queue
+        .delete_job(&id2, "integration_q")
+        .await
+        .expect("delete");
+    let ev4 = queue
+        .read_queue_events("integration_q", 50)
+        .await
+        .expect("read");
+    assert!(
+        ev4.iter().any(
+            |e| e["type"] == "removed" && e["jobId"] == id2.to_string()
+        ),
+        "expected removed event, got {ev4:?}"
+    );
+}

@@ -25,6 +25,10 @@ pub struct WorkerConfig {
     pub stalled_job_check_interval: Duration,
     pub worker_id: String,
     pub shutdown_timeout: Duration,
+    /// When `true`, if the process has no global tracing subscriber at worker startup, ChainMQ
+    /// installs one with the Redis job-log layer (stdout + per-job Redis logs). Default is `false`;
+    /// use queue lifecycle events ([`crate::Queue::emit_queue_event`]) for primary observability.
+    pub tracing_job_logs: bool,
 }
 
 impl Default for WorkerConfig {
@@ -36,6 +40,7 @@ impl Default for WorkerConfig {
             stalled_job_check_interval: Duration::from_secs(30),
             worker_id: format!("worker-{}", uuid::Uuid::new_v4()),
             shutdown_timeout: Duration::from_secs(30),
+            tracing_job_logs: false,
         }
     }
 }
@@ -118,6 +123,12 @@ impl WorkerBuilder {
         self
     }
 
+    /// Opt in to the legacy tracing subscriber + Redis job log layer (see [`WorkerConfig::tracing_job_logs`]).
+    pub fn with_tracing_job_logs(mut self, enabled: bool) -> Self {
+        self.config.tracing_job_logs = enabled;
+        self
+    }
+
     pub async fn spawn(self) -> Result<Worker> {
         let app_context = self
             .app_context
@@ -129,9 +140,10 @@ impl WorkerBuilder {
 
 /// Job worker that processes queued jobs.
 ///
-/// If the process has no global tracing subscriber when this worker is created, ChainMQ installs
-/// a default one (`EnvFilter` from `RUST_LOG` or `info`, stdout `fmt`, and the Redis job-log layer
-/// for this worker’s queue). See [`crate::job_log_layer`].
+/// When [`WorkerConfig::tracing_job_logs`] is `true` and the process has no global tracing
+/// subscriber at creation time, ChainMQ installs a default one (`EnvFilter` from `RUST_LOG` or
+/// `info`, stdout `fmt`, and the Redis job-log layer for this worker’s queue). See
+/// [`crate::job_log_layer`]. By default this is **off**; prefer queue events for observability.
 pub struct Worker {
     config: WorkerConfig,
     queue: Arc<Queue>,
@@ -155,7 +167,11 @@ impl Worker {
             Some(q) => q,
             None => Arc::new(Queue::new(config.queue_options.clone()).await?),
         };
-        crate::job_log_layer::install_default_subscriber_with_job_logs_if_unset(Arc::clone(&queue));
+        if config.tracing_job_logs {
+            crate::job_log_layer::install_default_subscriber_with_job_logs_if_unset(Arc::clone(
+                &queue,
+            ));
+        }
         let semaphore = Arc::new(Semaphore::new(config.concurrency));
         let (shutdown_tx, _) = broadcast::channel(1);
         let is_shutting_down = Arc::new(AtomicBool::new(false));

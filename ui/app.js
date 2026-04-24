@@ -47,8 +47,394 @@ async function fetchAuthSession() {
   return response.json();
 }
 
+/** @param {number} tsMs */
+function formatActivityRelativeMs(tsMs) {
+  const d = Date.now() - tsMs;
+  if (d < 8000) return "Just now";
+  const sec = Math.floor(d / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const h = Math.floor(min / 60);
+  if (h < 48) return `${h}h ago`;
+  const days = Math.floor(h / 24);
+  return `${days}d ago`;
+}
+
+/** @param {unknown} v unix seconds or millis */
+function coerceTimestampMs(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return n < 1e12 ? n * 1000 : n;
+}
+
+function humanizeActivityEventType(typeRaw) {
+  const t = String(typeRaw || "event");
+  const labels = {
+    active: "Running",
+    delayed_moved: "Promoted from delay",
+    retried: "Retry enqueued",
+  };
+  if (labels[t]) return labels[t];
+  return t
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function activityEventVariant(typeRaw) {
+  const t = String(typeRaw || "").toLowerCase();
+  if (t === "completed") return "success";
+  if (t === "failed") return "danger";
+  if (t === "delayed" || t === "stalled") return "warn";
+  if (t === "active") return "run";
+  if (t === "progress" || t === "delayed_moved" || t === "retried") return "info";
+  if (t === "removed") return "muted";
+  return "neutral";
+}
+
+function jobActivityEventIconSvg(typeRaw) {
+  const t = String(typeRaw || "").toLowerCase();
+  const s =
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
+  const box = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"';
+  switch (t) {
+    case "completed":
+      return `${box} ${s}><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`;
+    case "failed":
+      return `${box} ${s}><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`;
+    case "delayed":
+      return `${box} ${s}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`;
+    case "delayed_moved":
+      return `${box} ${s}><polyline points="9 6 15 12 9 18"/></svg>`;
+    case "active":
+      return `${box} ${s}><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
+    case "waiting":
+      return `${box} ${s}><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>`;
+    case "progress":
+      return `${box} ${s}><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`;
+    case "stalled":
+      return `${box} ${s}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`;
+    case "removed":
+      return `${box} ${s}><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>`;
+    case "retried":
+      return `${box} ${s}><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`;
+    default:
+      return `${box} ${s}><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`;
+  }
+}
+
+/**
+ * @param {object} ev
+ * @param {string} typeLc
+ */
+function delayedEventScheduleLocale(ev) {
+  const data = ev.data;
+  if (data == null || typeof data !== "object" || Array.isArray(data)) return null;
+  const exMs = coerceTimestampMs(data.executeAt);
+  if (exMs == null) return null;
+  return new Date(exMs).toLocaleString();
+}
+
+/**
+ * Primary datetime + caption for hierarchy (all event types).
+ * @returns {{ context: string, stamp: string, stampTitle: string }}
+ */
+function activityStampBlock(ev, typeLc) {
+  const ts = ev.ts != null && Number.isFinite(Number(ev.ts)) ? Number(ev.ts) : null;
+  const loggedStr = ts != null ? new Date(ts).toLocaleString() : null;
+  const sched = typeLc === "delayed" ? delayedEventScheduleLocale(ev) : null;
+
+  if (sched != null) {
+    return {
+      context: "Scheduled for",
+      stamp: sched,
+      stampTitle:
+        loggedStr != null
+          ? `Run at ${sched}. Logged ${loggedStr}.`
+          : `Run at ${sched}.`,
+    };
+  }
+  if (loggedStr != null) {
+    return {
+      context: "Logged at",
+      stamp: loggedStr,
+      stampTitle: `Event logged ${loggedStr}.`,
+    };
+  }
+  return { context: "", stamp: "", stampTitle: "" };
+}
+
+function formatJobActivityMetaChips(ev, typeLc) {
+  const chips = [];
+  const data = ev.data;
+  if (data != null && typeof data === "object" && !Array.isArray(data)) {
+    const ex = data.executeAt;
+    const exMs = coerceTimestampMs(ex);
+    if (exMs != null) {
+      const loc = new Date(exMs).toLocaleString();
+      // Delayed: schedule is shown in the title (date before "Delayed"); skip duplicate chip.
+      if (typeLc !== "delayed") {
+        chips.push(
+          `<span class="job-activity-chip job-activity-chip--schedule" title="${escapeAttr(loc)}">Scheduled ${escapeHtml(loc)}</span>`,
+        );
+      }
+    }
+    if (data.attempt != null && String(data.attempt).trim() !== "") {
+      chips.push(
+        `<span class="job-activity-chip">Attempt <strong>${escapeHtml(String(data.attempt))}</strong></span>`,
+      );
+    }
+  }
+  if (typeLc === "progress" && data != null) {
+    const raw = JSON.stringify(data, null, 2);
+    const oneLine = JSON.stringify(data);
+    const display =
+      oneLine.length > 200 ? `${truncateText(oneLine, 200)}…` : oneLine;
+    chips.push(
+      `<div class="job-activity-progress"><span class="job-activity-progress__label">Snapshot</span><pre class="job-activity-progress__pre" title="${escapeAttr(raw)}">${escapeHtml(display)}</pre></div>`,
+    );
+  }
+  const detail = ev.detail != null ? String(ev.detail).trim() : "";
+  if (detail && typeLc !== "failed") {
+    chips.push(
+      `<p class="job-activity-note">${escapeHtml(truncateText(detail, 400))}</p>`,
+    );
+  }
+  if (!chips.length) return "";
+  return `<div class="job-activity-row__meta">${chips.join("")}</div>`;
+}
+
+/** @param {object} ev */
+function formatJobActivityEventRow(ev) {
+  const typeRaw = String(ev.type ?? "event");
+  const typeLc = typeRaw.toLowerCase();
+  const variant = activityEventVariant(typeRaw);
+  const kindLabel = humanizeActivityEventType(typeRaw);
+  const { context, stamp, stampTitle } = activityStampBlock(ev, typeLc);
+  const ts = ev.ts != null && Number.isFinite(Number(ev.ts)) ? Number(ev.ts) : null;
+  const abs = ts != null ? new Date(ts).toLocaleString() : "—";
+  const rel = ts != null ? formatActivityRelativeMs(ts) : "—";
+  const iso = ts != null ? new Date(ts).toISOString() : "";
+  const stampBlock =
+    stamp &&
+    `<div class="job-activity-row__stamp-block">
+      ${context ? `<p class="job-activity-row__context">${escapeHtml(context)}</p>` : ""}
+      <p class="job-activity-row__stamp" title="${escapeAttr(stampTitle || stamp)}">${escapeHtml(stamp)}</p>
+    </div>`;
+  const meta = formatJobActivityMetaChips(ev, typeLc);
+  const detail = ev.detail != null ? String(ev.detail).trim() : "";
+  const errorBlock =
+    typeLc === "failed" && detail
+      ? `<div class="job-activity-row__error" role="status"><span class="job-activity-row__error-label">Message</span><pre class="job-activity-error-pre">${escapeHtml(detail)}</pre></div>`
+      : "";
+
+  const asideBlock =
+    ts != null
+      ? `<div class="job-activity-row__aside">
+          <time class="job-activity-row__time" datetime="${escapeAttr(iso)}" title="${escapeAttr(abs)}">${escapeHtml(rel)}</time>
+        </div>`
+      : "";
+
+  return `<li class="job-activity-row job-activity-row--${variant}">
+    <div class="job-activity-row__rail" aria-hidden="true">
+      <span class="job-activity-row__icon">${jobActivityEventIconSvg(typeRaw)}</span>
+    </div>
+    <article class="job-activity-row__card">
+      <header class="job-activity-row__head">
+        <div class="job-activity-row__lead">
+          ${stampBlock || ""}
+          <h4 class="job-activity-row__label">${escapeHtml(kindLabel)}</h4>
+        </div>
+        ${asideBlock}
+      </header>
+      ${meta}
+      ${errorBlock}
+    </article>
+  </li>`;
+}
+
+async function fetchQueueEventsForQueue(queueName, limit) {
+  const response = await apiFetch(
+    `queues/${encodeURIComponent(queueName)}/events?limit=${limit}`,
+  );
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+  return Array.isArray(body.events) ? body.events : [];
+}
+
+function parseRedisInt(s) {
+  if (s == null || s === "") return 0;
+  const n = Number(String(s).trim());
+  return Number.isFinite(n) ? n : 0;
+}
+
+function formatBytes(n) {
+  if (!Number.isFinite(n) || n < 0) return "—";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < u.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  if (i === 0) return `${Math.round(v)} ${u[i]}`;
+  const d = v >= 100 ? 0 : v >= 10 ? 1 : 2;
+  return `${v.toFixed(d)} ${u[i]}`;
+}
+
+/** Human-readable % of `used` / `cap` (bytes); avoids rounding tiny ratios to 0.0%. */
+function formatMemoryPercentLabel(used, cap) {
+  if (!Number.isFinite(used) || !Number.isFinite(cap) || cap <= 0) return "—";
+  const pct = (used / cap) * 100;
+  if (pct <= 0) return "0%";
+  if (pct < 0.001) return "<0.001%";
+  if (pct < 0.01) return `${pct.toFixed(3)}%`;
+  if (pct < 0.1) return `${pct.toFixed(2)}%`;
+  if (pct < 1) return `${pct.toFixed(2)}%`;
+  if (pct < 10) return `${pct.toFixed(1)}%`;
+  return `${Math.round(pct)}%`;
+}
+
+/**
+ * Percent 0–100 for the ring / bar. Very small real usage is boosted slightly so the arc is
+ * visible; the label uses {@link formatMemoryPercentLabel} for the exact ratio.
+ */
+function memoryPercentVisual(used, cap) {
+  if (!Number.isFinite(used) || !Number.isFinite(cap) || cap <= 0) return 0;
+  const pct = Math.min(100, Math.max(0, (used / cap) * 100));
+  if (pct <= 0) return 0;
+  if (pct < 1) return Math.max(pct, 1);
+  return pct;
+}
+
+async function loadRedisServerStats() {
+  const body = document.getElementById("queueRedisStatsBody");
+  if (!body || document.getElementById("loginOverlay")?.hidden === false) {
+    return;
+  }
+  try {
+    const response = await apiFetch("redis/stats");
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+
+    const used = parseRedisInt(data.used_memory);
+    const usedHum =
+      data.used_memory_human && String(data.used_memory_human).trim()
+        ? String(data.used_memory_human).trim()
+        : formatBytes(used);
+    const maxM = parseRedisInt(data.maxmemory);
+    const totalSys = parseRedisInt(data.total_system_memory);
+    let cap = 0;
+    let capHum = "";
+    let capNote = "";
+    if (maxM > 0) {
+      cap = maxM;
+      capHum =
+        data.maxmemory_human && String(data.maxmemory_human).trim()
+          ? String(data.maxmemory_human).trim()
+          : formatBytes(maxM);
+      capNote = "of maxmemory cap";
+    } else if (totalSys > 0) {
+      cap = totalSys;
+      capHum = formatBytes(totalSys);
+      capNote = "of host RAM";
+    }
+    const pctLabel =
+      cap > 0 && used >= 0
+        ? formatMemoryPercentLabel(used, cap)
+        : "—";
+    const pctVisual =
+      cap > 0 && used > 0 ? memoryPercentVisual(used, cap) : 0;
+
+    const ver = data.redis_version ? escapeHtml(String(data.redis_version)) : "";
+    const up = data.uptime_in_seconds
+      ? escapeHtml(String(data.uptime_in_seconds))
+      : "";
+    const cli =
+      data.connected_clients != null
+        ? escapeHtml(String(data.connected_clients))
+        : "";
+    const ops =
+      data.instantaneous_ops_per_sec != null
+        ? escapeHtml(String(data.instantaneous_ops_per_sec))
+        : "";
+    const frag = data.mem_fragmentation_ratio
+      ? escapeHtml(String(data.mem_fragmentation_ratio))
+      : "";
+    const rssN = parseRedisInt(data.used_memory_rss);
+    const rssHum =
+      rssN > 0 ? escapeHtml(formatBytes(rssN)) : "";
+
+    const ofLine =
+      capHum !== ""
+        ? `<span class="redis-mem-of">used of <strong>${escapeHtml(capHum)}</strong>${capNote ? ` <span class="job-detail-muted">(${escapeHtml(capNote)})</span>` : ""}</span>`
+        : `<span class="redis-mem-of job-detail-muted">used (no cap / host total from INFO)</span>`;
+
+    const metaBits = [
+      ver ? `<span><code>${ver}</code></span>` : "",
+      up
+        ? `<span class="redis-mem-dot" aria-hidden="true"></span><span>uptime <code>${up}</code>s</span>`
+        : "",
+      cli
+        ? `<span class="redis-mem-dot" aria-hidden="true"></span><span><code>${cli}</code> clients</span>`
+        : "",
+      ops
+        ? `<span class="redis-mem-dot" aria-hidden="true"></span><span><code>${ops}</code> ops/s</span>`
+        : "",
+      frag
+        ? `<span class="redis-mem-dot" aria-hidden="true"></span><span>frag <code>${frag}</code></span>`
+        : "",
+      rssHum
+        ? `<span class="redis-mem-dot" aria-hidden="true"></span><span>RSS ${rssHum}</span>`
+        : "",
+    ].join("");
+
+    body.innerHTML = `
+      <div class="redis-infra-inner">
+        <div class="redis-orbit-wrap" aria-hidden="true">
+          <div class="redis-orbit" style="--redis-mem-pct: ${pctVisual}"></div>
+          <div class="redis-orbit__hole">
+            <span class="redis-orbit__pct">${escapeHtml(pctLabel)}</span>
+          </div>
+        </div>
+        <div class="redis-mem-copy">
+          <p class="redis-mem-kicker">Redis · memory</p>
+          <div class="redis-mem-row">
+            <span class="redis-mem-used">${escapeHtml(usedHum)}</span>
+            ${ofLine}
+          </div>
+          <div class="redis-mem-bar-wrap" style="--redis-mem-pct: ${pctVisual}">
+            <div class="redis-mem-bar"></div>
+          </div>
+          <div class="redis-mem-meta">${metaBits}</div>
+        </div>
+      </div>`;
+  } catch (e) {
+    body.innerHTML = `<p class="job-detail-muted">Could not load Redis: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function openRedisStatsModal() {
+  const ov = document.getElementById("redisModalOverlay");
+  if (!ov) return;
+  ov.hidden = false;
+  const body = document.getElementById("queueRedisStatsBody");
+  if (body) {
+    body.innerHTML =
+      '<p class="job-detail-muted redis-modal__loading">Loading…</p>';
+  }
+  document.getElementById("redisModalCloseBtn")?.focus();
+  void loadRedisServerStats();
+}
+
+function closeRedisStatsModal() {
+  const ov = document.getElementById("redisModalOverlay");
+  if (ov) ov.hidden = true;
+}
+
 function showLoginOverlay(message) {
   closeMobileNav();
+  closeRedisStatsModal();
   const overlay = document.getElementById("loginOverlay");
   if (!overlay) return;
   overlay.hidden = false;
@@ -167,7 +553,7 @@ const JOB_DETAIL_AUTO_KEY = "chainmq-job-detail-auto-refresh";
 const SIDEBAR_COLLAPSED_KEY = "chainmq-sidebar-collapsed";
 let jobDetailLastFetchedAt = null;
 let jobDetailRelativeTimer = 0;
-/** @type {"details" | "logs"} */
+/** @type {"details" | "activity"} */
 let jobDetailSelectedTab = "details";
 
 function getJobDetailAutoRefresh() {
@@ -375,65 +761,55 @@ function jobDetailCloseOverflowMenu() {
   if (d) d.open = false;
 }
 
-async function fetchJobLogs(jobId) {
-  const response = await apiFetch(
-    `jobs/${encodeURIComponent(jobId)}/logs?limit=200`,
-  );
-  if (response.status === 404) {
-    return { ok: true, lines: [] };
-  }
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body.error || `HTTP ${response.status}`);
-  }
-  const data = await response.json().catch(() => ({}));
-  const lines = Array.isArray(data.lines) ? data.lines : [];
-  return { ok: true, lines };
-}
-
 function switchJobDetailTab(which) {
-  jobDetailSelectedTab = which === "logs" ? "logs" : "details";
+  jobDetailSelectedTab = which === "activity" ? "activity" : "details";
   const detailsBtn = document.getElementById("jobDetailTabDetails");
-  const logsBtn = document.getElementById("jobDetailTabLogs");
+  const activityBtn = document.getElementById("jobDetailTabActivity");
   const detailsPanel = document.getElementById("jobDetailPanelDetails");
-  const logsPanel = document.getElementById("jobDetailPanelLogs");
-  if (!detailsBtn || !logsBtn || !detailsPanel || !logsPanel) return;
-  const showLogs = jobDetailSelectedTab === "logs";
-  detailsBtn.setAttribute("aria-selected", (!showLogs).toString());
-  logsBtn.setAttribute("aria-selected", showLogs.toString());
-  detailsPanel.hidden = showLogs;
-  logsPanel.hidden = !showLogs;
-  if (showLogs) logsBtn.focus();
+  const activityPanel = document.getElementById("jobDetailPanelActivity");
+  if (!detailsBtn || !activityBtn || !detailsPanel || !activityPanel) return;
+  const showActivity = jobDetailSelectedTab === "activity";
+  detailsBtn.setAttribute("aria-selected", (!showActivity).toString());
+  activityBtn.setAttribute("aria-selected", showActivity.toString());
+  detailsPanel.hidden = showActivity;
+  activityPanel.hidden = !showActivity;
+  if (showActivity) activityBtn.focus();
 }
 
-async function loadJobLogsPanel(jobId) {
-  const body = document.getElementById("jobDetailLogsBody");
-  if (!body) return;
+async function loadJobActivityPanel(jobId, queueName) {
+  const body = document.getElementById("jobDetailActivityBody");
+  const countEl = document.getElementById("jobDetailActivityCount");
+  if (!body || !queueName) return;
+  if (countEl) {
+    countEl.hidden = true;
+    countEl.textContent = "";
+  }
   body.innerHTML =
-    '<p class="job-detail-logs-loading job-detail-muted">Loading logs…</p>';
+    '<div class="job-activity-loading"><span class="job-activity-loading__dot" aria-hidden="true"></span> Loading timeline…</div>';
   try {
-    const { lines } = await fetchJobLogs(jobId);
-    if (!lines.length) {
-      body.innerHTML = `
-        <div class="job-detail-logs-empty" role="status">
-          <div class="job-detail-logs-empty-icon" aria-hidden="true">
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h6"/><path d="M8 17h4"/></svg>
-          </div>
-          <p class="job-detail-logs-empty-lead">No log lines for this job yet</p>
-          <p class="job-detail-logs-empty-copy">Connect your worker or logging pipeline to <code class="job-detail-inline-code">GET …/jobs/{id}/logs</code>, or check server stdout while jobs run.</p>
-        </div>`;
+    const events = await fetchQueueEventsForQueue(queueName, 200);
+    const filtered = events.filter(
+      (ev) => String(ev.jobId || "") === String(jobId),
+    );
+    if (!filtered.length) {
+      body.innerHTML = `<div class="job-activity-empty" role="status">
+        <div class="job-activity-empty__icon" aria-hidden="true">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <p class="job-activity-empty__title">No events for this job</p>
+        <p class="job-activity-empty__text">The queue events stream has no retained entries matching this job id, or events expired under <code class="job-activity-mono">events_stream_max_len</code>.</p>
+      </div>`;
       return;
     }
-    body.innerHTML = lines
-      .map((line) => {
-        const ts = escapeHtml(line.ts ?? "—");
-        const level = escapeHtml(String(line.level ?? "info"));
-        const msg = escapeHtml(String(line.message ?? ""));
-        return `<div class="job-detail-log-line job-detail-log-line--${level.toLowerCase()}"><span class="job-detail-log-ts">${ts}</span><span class="job-detail-log-level">${level}</span><span class="job-detail-log-msg">${msg}</span></div>`;
-      })
-      .join("");
+    if (countEl) {
+      const n = filtered.length;
+      countEl.textContent = `${n} event${n === 1 ? "" : "s"}`;
+      countEl.hidden = false;
+    }
+    body.innerHTML = `<ol class="job-activity-timeline" aria-label="Job lifecycle events, newest first">${filtered.map((e) => formatJobActivityEventRow(e)).join("")}</ol>`;
   } catch (e) {
-    body.innerHTML = `<p class="job-detail-error">${escapeHtml("Could not load logs: " + e.message)}</p>`;
+    if (countEl) countEl.hidden = true;
+    body.innerHTML = `<p class="job-detail-error">${escapeHtml("Could not load activity: " + e.message)}</p>`;
   }
 }
 
@@ -898,6 +1274,22 @@ function setupEventListeners() {
   document
     .getElementById("processDelayedBtn")
     .addEventListener("click", processDelayed);
+  document.getElementById("redisStatsBtn")?.addEventListener("click", () => {
+    openRedisStatsModal();
+  });
+  document.getElementById("redisModalCloseBtn")?.addEventListener("click", () => {
+    closeRedisStatsModal();
+  });
+  document.getElementById("redisModalOverlay")?.addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) closeRedisStatsModal();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const m = document.getElementById("redisModalOverlay");
+    if (m && !m.hidden) {
+      closeRedisStatsModal();
+    }
+  });
   document
     .getElementById("recoverStalledBtn")
     .addEventListener("click", recoverStalled);
@@ -992,9 +1384,12 @@ function setupEventListeners() {
     if (tabBtn) {
       e.preventDefault();
       const tab = tabBtn.getAttribute("data-job-tab");
-      if (tab === "logs" || tab === "details") {
+      if (tab === "activity" || tab === "details") {
         switchJobDetailTab(tab);
-        if (tab === "logs" && currentJobId) void loadJobLogsPanel(currentJobId);
+        if (tab === "activity" && currentJobId) {
+          const qn = (detailJob && detailJob.queue_name) || currentQueue;
+          if (qn) void loadJobActivityPanel(currentJobId, qn);
+        }
       }
       return;
     }
@@ -1010,11 +1405,14 @@ function setupEventListeners() {
       }
       return;
     }
-    const logsCta = e.target.closest("[data-focus-tab='logs']");
-    if (logsCta) {
+    const activityCta = e.target.closest("[data-focus-tab='activity']");
+    if (activityCta) {
       e.preventDefault();
-      switchJobDetailTab("logs");
-      if (currentJobId) void loadJobLogsPanel(currentJobId);
+      switchJobDetailTab("activity");
+      if (currentJobId) {
+        const qn = (detailJob && detailJob.queue_name) || currentQueue;
+        if (qn) void loadJobActivityPanel(currentJobId, qn);
+      }
       return;
     }
     const retryFromEmpty = e.target.closest('[data-action="retry-from-empty"]');
@@ -1102,13 +1500,55 @@ function switchState(state) {
   loadJobs();
 }
 
+function totalJobsFromStatsPayload(data) {
+  return (
+    (data.waiting || 0) +
+    (data.active || 0) +
+    (data.delayed || 0) +
+    (data.failed || 0) +
+    (data.completed || 0)
+  );
+}
+
+/**
+ * Fetch per-queue totals, then sort: non-empty first (higher total first), then empty
+ * (alphabetical). Queues with zero jobs across all states appear last.
+ */
+async function sortQueueNamesByJobTotals(names) {
+  const entries = await Promise.all(
+    names.map(async (name) => {
+      try {
+        const response = await apiFetch(
+          `queues/${encodeURIComponent(name)}/stats`,
+        );
+        const data = await response.json();
+        if (!response.ok) return { name, total: 0 };
+        return { name, total: totalJobsFromStatsPayload(data) };
+      } catch {
+        return { name, total: 0 };
+      }
+    }),
+  );
+  entries.sort((a, b) => {
+    const aEmpty = a.total === 0 ? 1 : 0;
+    const bEmpty = b.total === 0 ? 1 : 0;
+    if (aEmpty !== bEmpty) return aEmpty - bEmpty;
+    if (b.total !== a.total) return b.total - a.total;
+    return a.name.localeCompare(b.name);
+  });
+  const totalsMap = new Map(entries.map((e) => [e.name, e.total]));
+  return { names: entries.map((e) => e.name), totalsMap };
+}
+
 async function loadQueues() {
   try {
     const response = await apiFetch("queues");
     const data = await response.json();
 
-    queues = data.queues || [];
-    renderQueues();
+    const raw = data.queues || [];
+    const { names, totalsMap } = await sortQueueNamesByJobTotals(raw);
+    queues = names;
+    renderQueues(totalsMap);
 
     const route = parseJobRoute(window.location.hash);
     if (route) {
@@ -1123,7 +1563,10 @@ async function loadQueues() {
   }
 }
 
-function renderQueues() {
+/**
+ * @param {Map<string, number> | undefined} preloadedTotals from {@link sortQueueNamesByJobTotals}; when set, skips duplicate stats fetches.
+ */
+function renderQueues(preloadedTotals) {
   const queuesList = document.getElementById("queues-list");
 
   if (queues.length === 0) {
@@ -1156,19 +1599,21 @@ function renderQueues() {
     });
   });
 
-  // Load stats for all queues
-  queues.forEach((queue) => loadQueueStatsForSidebar(queue));
+  if (preloadedTotals) {
+    for (const q of queues) {
+      const el = document.getElementById(`queue-stats-${q}`);
+      if (el) el.textContent = String(preloadedTotals.get(q) ?? "0");
+    }
+  } else {
+    queues.forEach((queue) => loadQueueStatsForSidebar(queue));
+  }
 }
 
 async function loadQueueStatsForSidebar(queueName) {
   try {
     const response = await apiFetch(`queues/${queueName}/stats`);
     const data = await response.json();
-    const total =
-      (data.waiting || 0) +
-      (data.active || 0) +
-      (data.delayed || 0) +
-      (data.failed || 0);
+    const total = totalJobsFromStatsPayload(data);
     const statsEl = document.getElementById(`queue-stats-${queueName}`);
     if (statsEl) {
       statsEl.textContent = total;
@@ -1180,6 +1625,7 @@ async function loadQueueStatsForSidebar(queueName) {
 
 function selectQueue(queueName) {
   closeMobileNav();
+  closeRedisStatsModal();
   jobDetailActive = false;
   currentJobId = null;
   detailJob = null;
@@ -1376,6 +1822,8 @@ function createJobRow(job) {
 async function openJobDetailPage(queueName, jobId, opts = {}) {
   if (!jobId) return;
 
+  closeRedisStatsModal();
+
   if (
     opts.fromHash &&
     jobDetailActive &&
@@ -1449,8 +1897,8 @@ async function loadJobDetailPageContent({ silent }) {
     renderJobDetailPage(job);
     touchJobDetailFetched();
     switchJobDetailTab(jobDetailSelectedTab);
-    if (jobDetailSelectedTab === "logs") {
-      void loadJobLogsPanel(job.id);
+    if (jobDetailSelectedTab === "activity") {
+      void loadJobActivityPanel(job.id, job.queue_name);
     }
     const retryBtn = document.getElementById("retryJobBtn");
     if (retryBtn) {
@@ -1506,7 +1954,7 @@ function renderResponseEmptyState(job) {
   } else if (state === "Failed") {
     lead = "No response payload";
     bodyHtml =
-      "See <strong>Last error</strong> in execution metadata, or open logs for details.";
+      "See <strong>Last error</strong> in execution metadata, or open the Activity tab for lifecycle events.";
   } else if (state === "Active") {
     lead = "No response yet";
     bodyHtml = "The worker has not finished this job.";
@@ -1531,7 +1979,7 @@ function renderResponseEmptyState(job) {
         <p class="job-detail-response-empty-lead">${escapeHtml(lead)}</p>
         <p class="job-detail-response-empty">${bodyHtml}</p>
         <div class="job-detail-empty-ctas">
-          <button type="button" class="btn btn-secondary btn-sm" data-focus-tab="logs">View logs</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-focus-tab="activity">View activity</button>
           ${retryBtn}
         </div>
       </div>
@@ -1739,7 +2187,7 @@ function renderJobDetailPage(job) {
   <div class="job-detail-shell">
     <div class="job-detail-tablist" role="tablist" aria-label="Job views">
       <button type="button" class="job-detail-tab" role="tab" id="jobDetailTabDetails" data-job-tab="details" aria-selected="true" aria-controls="jobDetailPanelDetails">Details</button>
-      <button type="button" class="job-detail-tab" role="tab" id="jobDetailTabLogs" data-job-tab="logs" aria-selected="false" aria-controls="jobDetailPanelLogs">Logs</button>
+      <button type="button" class="job-detail-tab" role="tab" id="jobDetailTabActivity" data-job-tab="activity" aria-selected="false" aria-controls="jobDetailPanelActivity">Activity</button>
     </div>
 
     <div id="jobDetailPanelDetails" class="job-detail-tabpanel" role="tabpanel" aria-labelledby="jobDetailTabDetails">
@@ -1803,10 +2251,16 @@ function renderJobDetailPage(job) {
       </div>
     </div>
 
-    <div id="jobDetailPanelLogs" class="job-detail-tabpanel job-detail-tabpanel--logs" role="tabpanel" aria-labelledby="jobDetailTabLogs" hidden>
-      <div class="job-detail-logs-panel">
-        <p class="job-detail-logs-intro job-detail-muted">Inline log lines from your workers (when the API provides them).</p>
-        <div id="jobDetailLogsBody" class="job-detail-logs-body"></div>
+    <div id="jobDetailPanelActivity" class="job-detail-tabpanel job-detail-tabpanel--activity" role="tabpanel" aria-labelledby="jobDetailTabActivity" hidden>
+      <div class="job-detail-activity-panel">
+        <header class="job-detail-activity-header">
+          <div class="job-detail-activity-header__text">
+            <h3 class="job-detail-activity-title">Activity timeline</h3>
+            <p class="job-detail-activity-lede">Lifecycle events from the queue stream for this job. Newest first — hover a timestamp for the exact clock time.</p>
+          </div>
+          <span id="jobDetailActivityCount" class="job-detail-activity-count" hidden></span>
+        </header>
+        <div id="jobDetailActivityBody" class="job-detail-activity-body"></div>
       </div>
     </div>
   </div>`;

@@ -47,12 +47,12 @@ impl JobContext {
         }
     }
 
-    /// Same Redis [`Queue`] instance the worker uses (BullMQ-style `job.queue`).
+    /// Same Redis [`Queue`] instance the worker uses.
     pub fn queue(&self) -> &Arc<Queue> {
         &self.queue
     }
 
-    /// Cooperative cancellation (similar to BullMQ’s `AbortSignal`). Poll with
+    /// Cooperative cancellation. Poll with
     /// [`CancellationToken::is_cancelled`] or `.cancelled().await`.
     pub fn cancellation_token(&self) -> &CancellationToken {
         &self.cancel
@@ -65,8 +65,13 @@ impl JobContext {
             .get_job(&self.job_id)
             .await?
             .ok_or_else(|| ChainMQError::JobNotFound(self.job_id.clone()))?;
-        meta.progress = Some(value);
-        self.queue.save_job_metadata(&self.job_id, &meta).await
+        meta.progress = Some(value.clone());
+        let qn = meta.queue_name.clone();
+        self.queue.save_job_metadata(&self.job_id, &meta).await?;
+        self.queue
+            .emit_queue_event(&qn, "progress", Some(&self.job_id), Some(value), None)
+            .await;
+        Ok(())
     }
 
     /// Attach a JSON-serializable result to this run. It is persisted on the job when it completes

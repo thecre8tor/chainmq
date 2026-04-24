@@ -75,6 +75,11 @@ pub struct JobLogsQuery {
 }
 
 #[derive(Deserialize)]
+pub struct QueueEventsQuery {
+    pub limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
@@ -270,6 +275,35 @@ pub async fn api_get_queues(queue: &Queue) -> (http::StatusCode, serde_json::Val
             http::StatusCode::OK,
             serde_json::to_value(QueueListResponse { queues }).unwrap_or_default(),
         ),
+        Err(e) => (
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": e.to_string() }),
+        ),
+    }
+}
+
+pub async fn api_list_queue_events(
+    queue: &Queue,
+    queue_name: &str,
+    limit: usize,
+) -> (http::StatusCode, serde_json::Value) {
+    match queue.read_queue_events(queue_name, limit).await {
+        Ok(events) => (
+            http::StatusCode::OK,
+            serde_json::json!({ "events": events }),
+        ),
+        Err(e) => (
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": e.to_string() }),
+        ),
+    }
+}
+
+pub async fn api_get_redis_server_stats(
+    queue: &Queue,
+) -> (http::StatusCode, serde_json::Value) {
+    match queue.redis_server_metrics_json().await {
+        Ok(v) => (http::StatusCode::OK, v),
         Err(e) => (
             http::StatusCode::INTERNAL_SERVER_ERROR,
             serde_json::json!({ "error": e.to_string() }),

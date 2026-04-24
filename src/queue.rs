@@ -26,6 +26,8 @@ pub struct QueueOptions {
     pub max_completed_len: Option<usize>,
     /// Max entries kept on the failed list after each terminal failure. `None` disables trimming.
     pub max_failed_len: Option<usize>,
+    /// Approximate max entries per logical queue events stream (`XADD MAXLEN ~`).
+    pub events_stream_max_len: usize,
 }
 
 impl Default for QueueOptions {
@@ -39,6 +41,7 @@ impl Default for QueueOptions {
             job_logs_max_lines: 500,
             max_completed_len: Some(1000),
             max_failed_len: None,
+            events_stream_max_len: 1000,
         }
     }
 }
@@ -75,6 +78,141 @@ impl Queue {
 
     fn events_channel(&self, queue_name: &str) -> String {
         format!("{}:events:{}", self.options.key_prefix, queue_name)
+    }
+
+    fn events_stream_key(&self, queue_name: &str) -> String {
+        format!(
+            "{}:events:{}:stream",
+            self.options.key_prefix, queue_name
+        )
+    }
+
+    /// Redis pub/sub channel for this logical queue (same payload as the events stream).
+    pub fn redis_events_channel(&self, queue_name: &str) -> String {
+        self.events_channel(queue_name)
+    }
+
+    /// Open a [`redis::Client`] for pub/sub (live events). Unsupported when the queue was built with [`RedisClient::Manager`].
+    pub fn redis_pubsub_client(&self) -> Result<redis::Client> {
+        match &self.options.redis {
+            crate::redis::RedisClient::Url(u) => Ok(redis::Client::open(u.as_str())?),
+            crate::redis::RedisClient::Client(c) => Ok(c.clone()),
+            crate::redis::RedisClient::Manager(_) => Err(ChainMQError::Worker(
+                "Redis ConnectionManager mount does not support pub/sub; use RedisClient::Url or Client for live queue events.".into(),
+            )),
+        }
+    }
+
+    /// Append to the capped stream and publish the same JSON to the queue events channel.
+    pub async fn emit_queue_event(
+        &self,
+        queue_name: &str,
+        event_type: &str,
+        job_id: Option<&JobId>,
+        data: Option<serde_json::Value>,
+        detail: Option<&str>,
+    ) {
+        let ts = Utc::now().timestamp_millis();
+        let mut body = serde_json::json!({
+            "type": event_type,
+            "ts": ts,
+        });
+        if let Some(j) = job_id {
+            body["jobId"] = serde_json::Value::String(j.to_string());
+        }
+        if let Some(d) = detail {
+            body["detail"] = serde_json::Value::String(d.to_string());
+        }
+        if let Some(data) = data {
+            body["data"] = data;
+        }
+        let payload = match serde_json::to_string(&body) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::debug!(error = %e, "queue event serialize failed");
+                return;
+            }
+        };
+
+        let stream_key = self.events_stream_key(queue_name);
+        let mut conn = self.async_conn.clone();
+        let maxlen = self.options.events_stream_max_len;
+        let xadd_res = if maxlen > 0 {
+            redis::cmd("XADD")
+                .arg(&stream_key)
+                .arg("MAXLEN")
+                .arg("~")
+                .arg(maxlen)
+                .arg("*")
+                .arg("payload")
+                .arg(&payload)
+                .query_async::<String>(&mut conn)
+                .await
+        } else {
+            redis::cmd("XADD")
+                .arg(&stream_key)
+                .arg("*")
+                .arg("payload")
+                .arg(&payload)
+                .query_async::<String>(&mut conn)
+                .await
+        };
+        if let Err(e) = xadd_res {
+            tracing::debug!(error = %e, "queue event XADD failed");
+        }
+
+        if let Err(e) = conn
+            .publish::<_, _, ()>(self.events_channel(queue_name), &payload)
+            .await
+        {
+            tracing::debug!(error = %e, "queue event publish failed");
+        }
+    }
+
+    /// Recent queue lifecycle events (newest first), parsed from the events stream.
+    pub async fn read_queue_events(
+        &self,
+        queue_name: &str,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>> {
+        let take = limit.clamp(1, 500);
+        let stream_key = self.events_stream_key(queue_name);
+        let mut conn = self.async_conn.clone();
+        let raw: Vec<(String, Vec<(String, String)>)> = redis::cmd("XREVRANGE")
+            .arg(&stream_key)
+            .arg("+")
+            .arg("-")
+            .arg("COUNT")
+            .arg(take)
+            .query_async(&mut conn)
+            .await
+            .map_err(ChainMQError::Redis)?;
+
+        let mut out = Vec::with_capacity(raw.len());
+        for (_id, fields) in raw {
+            for (k, v) in fields {
+                if k == "payload" {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&v) {
+                        out.push(val);
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whitelisted `INFO` fields for the dashboard (shared Redis instance).
+    pub async fn redis_server_metrics_json(&self) -> Result<serde_json::Value> {
+        let mut conn = self.async_conn.clone();
+        let info: String = redis::cmd("INFO")
+            .arg("server")
+            .arg("memory")
+            .arg("clients")
+            .arg("stats")
+            .query_async(&mut conn)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        Ok(parse_redis_info_whitelist(&info))
     }
 
     /// Claim order: higher priority first (discriminants 20,10,5,1); FIFO bucket then LIFO per level; then legacy `:wait`.
@@ -154,36 +292,6 @@ impl Queue {
         Ok(())
     }
 
-    async fn publish_queue_event(
-        &self,
-        queue_name: &str,
-        event_type: &str,
-        job_id: &JobId,
-        detail: Option<&str>,
-    ) {
-        let mut body = serde_json::json!({
-            "type": event_type,
-            "jobId": job_id.to_string(),
-        });
-        if let Some(d) = detail {
-            body["detail"] = serde_json::Value::String(d.to_string());
-        }
-        let payload = match serde_json::to_string(&body) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::debug!(error = %e, "queue event serialize failed");
-                return;
-            }
-        };
-        let mut conn = self.async_conn.clone();
-        if let Err(e) = conn
-            .publish::<_, _, ()>(self.events_channel(queue_name), payload)
-            .await
-        {
-            tracing::debug!(error = %e, "queue event publish failed");
-        }
-    }
-
     pub(crate) async fn save_job_metadata(
         &self,
         job_id: &JobId,
@@ -219,7 +327,11 @@ impl Queue {
         metadata.state = JobState::Active;
         metadata.started_at = Some(now);
         metadata.worker_id = Some(worker_id.to_string());
-        self.save_job_metadata(job_id, &metadata).await
+        self.save_job_metadata(job_id, &metadata).await?;
+        let qn = metadata.queue_name.clone();
+        self.emit_queue_event(&qn, "active", Some(job_id), None, None)
+            .await;
+        Ok(())
     }
 
     /// Return a claimed job to the waiting queue (e.g. worker shutdown before execution).
@@ -247,6 +359,9 @@ impl Queue {
             metadata.worker_id = None;
             self.save_job_metadata(job_id, &metadata).await?;
         }
+
+        self.emit_queue_event(queue_name, "waiting", Some(job_id), None, None)
+            .await;
 
         Ok(())
     }
@@ -317,11 +432,21 @@ impl Queue {
                 .zadd::<_, _, _, ()>(&delayed_key, job_id.to_string(), execute_at)
                 .await
                 .map_err(ChainMQError::Redis)?;
+            self.emit_queue_event(
+                qname,
+                "delayed",
+                Some(&job_id),
+                Some(serde_json::json!({ "executeAt": execute_at })),
+                None,
+            )
+            .await;
         } else {
             let disc = metadata.options.priority.redis_discriminant();
             let lifo = metadata.options.lifo;
             self.push_job_to_wait(&mut conn, qname, &job_id.to_string(), disc, lifo)
                 .await?;
+            self.emit_queue_event(qname, "waiting", Some(&job_id), None, None)
+                .await;
         }
 
         Ok(job_id)
@@ -376,6 +501,14 @@ impl Queue {
                     metadata.state = JobState::Waiting;
                     self.save_job_metadata(&job_id, &metadata).await?;
                 }
+                self.emit_queue_event(
+                    queue_name,
+                    "delayed_moved",
+                    Some(&job_id),
+                    None,
+                    None,
+                )
+                .await;
             }
         }
 
@@ -494,7 +627,7 @@ impl Queue {
             }
         }
 
-        self.publish_queue_event(queue_name, "completed", job_id, None)
+        self.emit_queue_event(queue_name, "completed", Some(job_id), None, None)
             .await;
 
         Ok(())
@@ -567,6 +700,18 @@ impl Queue {
                 .zadd::<_, _, _, ()>(&delayed_key, &id_str, execute_at)
                 .await
                 .map_err(ChainMQError::Redis)?;
+
+            self.emit_queue_event(
+                &queue_name,
+                "delayed",
+                Some(job_id),
+                Some(serde_json::json!({
+                    "executeAt": execute_at,
+                    "attempt": new_attempts,
+                })),
+                None,
+            )
+            .await;
         } else {
             meta.state = JobState::Failed;
             self.save_job_metadata(job_id, &meta).await?;
@@ -585,7 +730,13 @@ impl Queue {
                 }
             }
 
-            self.publish_queue_event(&queue_name, "failed", job_id, Some(error))
+            self.emit_queue_event(
+                &queue_name,
+                "failed",
+                Some(job_id),
+                None,
+                Some(error),
+            )
                 .await;
         }
 
@@ -635,7 +786,13 @@ impl Queue {
             }
         }
 
-        self.publish_queue_event(&queue_name, "failed", job_id, Some(error))
+        self.emit_queue_event(
+            &queue_name,
+            "failed",
+            Some(job_id),
+            None,
+            Some(error),
+        )
             .await;
 
         Ok(())
@@ -942,6 +1099,9 @@ impl Queue {
             .await
             .map_err(ChainMQError::Redis)?;
 
+        self.emit_queue_event(queue_name, "retried", Some(job_id), None, None)
+            .await;
+
         Ok(())
     }
 
@@ -977,6 +1137,9 @@ impl Queue {
         let logs_key = self.job_logs_key(job_id);
         let _: () = conn.del(&job_key).await.map_err(ChainMQError::Redis)?;
         let _: () = conn.del(&logs_key).await.map_err(ChainMQError::Redis)?;
+
+        self.emit_queue_event(queue_name, "removed", Some(job_id), None, None)
+            .await;
 
         Ok(())
     }
@@ -1116,6 +1279,9 @@ impl Queue {
                         updated_metadata.worker_id = None;
                         self.save_job_metadata(&job_id, &updated_metadata).await?;
 
+                        self.emit_queue_event(queue_name, "stalled", Some(&job_id), None, None)
+                            .await;
+
                         recovered_count += 1;
                         tracing::info!("Recovered job {} - moved from active to waiting", job_id);
                     }
@@ -1135,6 +1301,49 @@ impl Queue {
 
         Ok(recovered_count)
     }
+}
+
+/// Parse `INFO` output and keep only non-sensitive dashboard fields.
+fn parse_redis_info_whitelist(info: &str) -> serde_json::Value {
+    let allowed: HashSet<&str> = [
+        "redis_version",
+        "redis_mode",
+        "os",
+        "uptime_in_seconds",
+        "used_memory_human",
+        "used_memory",
+        "used_memory_rss",
+        "maxmemory",
+        "maxmemory_human",
+        "total_system_memory",
+        "mem_fragmentation_ratio",
+        "connected_clients",
+        "blocked_clients",
+        "total_commands_processed",
+        "instantaneous_ops_per_sec",
+        "keyspace_hits",
+        "keyspace_misses",
+    ]
+    .into_iter()
+    .collect();
+    let mut map = serde_json::Map::new();
+    for line in info.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
+        let key = k.trim();
+        if allowed.contains(key) {
+            map.insert(
+                key.to_string(),
+                serde_json::Value::String(v.trim().to_string()),
+            );
+        }
+    }
+    serde_json::Value::Object(map)
 }
 
 #[derive(Debug, Clone)]

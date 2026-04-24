@@ -12,8 +12,9 @@ use actix_web::{
     dev::{ServiceRequest, ServiceResponse},
     http::header::LOCATION,
     middleware::{DefaultHeaders, Next, from_fn},
-    web::{self, ServiceConfig},
+    web::{self, Bytes, ServiceConfig},
 };
+use futures::StreamExt;
 
 fn map_http_status(s: http::StatusCode) -> actix_web::http::StatusCode {
     actix_web::http::StatusCode::from_u16(s.as_u16())
@@ -114,6 +115,15 @@ pub fn configure_chainmq_web_ui(
                 "/queues/{queue_name}/stats",
                 web::get().to(get_queue_stats_actix),
             )
+            .route(
+                "/queues/{queue_name}/events/live",
+                web::get().to(get_queue_events_live_actix),
+            )
+            .route(
+                "/queues/{queue_name}/events",
+                web::get().to(get_queue_events_actix),
+            )
+            .route("/redis/stats", web::get().to(get_redis_stats_actix))
             .route(
                 "/queues/{queue_name}/jobs/{state}",
                 web::get().to(list_jobs_actix),
@@ -285,6 +295,58 @@ async fn get_queue_stats_actix(
     let q = state.queue.lock().await;
     let (st, json) = core::api_get_queue_stats(&*q, &queue_name).await;
     Ok(HttpResponse::build(map_http_status(st)).json(json))
+}
+
+async fn get_queue_events_actix(
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+    query: web::Query<core::QueueEventsQuery>,
+) -> ActixResult<HttpResponse> {
+    let queue_name = path.into_inner();
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let q = state.queue.lock().await;
+    let (st, json) = core::api_list_queue_events(&*q, &queue_name, limit).await;
+    Ok(HttpResponse::build(map_http_status(st)).json(json))
+}
+
+async fn get_redis_stats_actix(state: web::Data<AppState>) -> ActixResult<HttpResponse> {
+    let q = state.queue.lock().await;
+    let (st, json) = core::api_get_redis_server_stats(&*q).await;
+    Ok(HttpResponse::build(map_http_status(st)).json(json))
+}
+
+async fn get_queue_events_live_actix(
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+) -> ActixResult<HttpResponse> {
+    let queue_name = path.into_inner();
+    let (client_res, channel) = {
+        let g = state.queue.lock().await;
+        (g.redis_pubsub_client(), g.redis_events_channel(&queue_name))
+    };
+    let Ok(client) = client_res else {
+        return Ok(
+            HttpResponse::ServiceUnavailable().json(serde_json::json!({
+                "error": "Live queue events require Redis URL or Client (not ConnectionManager). Use GET …/events for history."
+            })),
+        );
+    };
+    let mut pubsub = client
+        .get_async_pubsub()
+        .await
+        .map_err(actix_web::error::ErrorBadGateway)?;
+    pubsub
+        .subscribe(&channel)
+        .await
+        .map_err(actix_web::error::ErrorBadGateway)?;
+    let stream = pubsub.into_on_message().map(|msg| {
+        let s: String = msg.get_payload().unwrap_or_default();
+        Ok::<Bytes, Error>(Bytes::from(format!("data: {s}\n\n")))
+    });
+    Ok(HttpResponse::Ok()
+        .insert_header(("Content-Type", "text/event-stream"))
+        .insert_header(("Cache-Control", "no-cache"))
+        .streaming(stream))
 }
 
 async fn list_jobs_actix(

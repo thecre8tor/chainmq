@@ -115,7 +115,7 @@ pub struct JobMetadata {
     /// Set via [`crate::JobContext::set_response`] before the job completes successfully.
     #[serde(default)]
     pub response: Option<serde_json::Value>,
-    /// Optional progress payload (BullMQ-style `updateProgress`), updated via [`crate::JobContext::set_progress`].
+    /// Optional progress payload, updated via [`crate::JobContext::set_progress`].
     #[serde(default)]
     pub progress: Option<serde_json::Value>,
 }
