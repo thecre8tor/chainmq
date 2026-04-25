@@ -214,12 +214,14 @@ cargo build --examples
 Run Redis first, then use separate terminals for workers and enqueuers:
 
 ```bash
-# Single worker for the emails queue (enables tracing → Redis job logs like the web UI example)
+# Getting started
+# Single worker for the emails queue (enables tracing -> Redis job logs like the web UI example)
 cargo run --example worker_main
 
 # Enqueue email jobs (normal + delayed / high priority); optional UI entrypoint at end of file
 cargo run --example enqueue_email
 
+# Workers and queue topologies
 # One worker handling multiple job types on one logical queue name
 cargo run --example multi_jobs_single_worker
 
@@ -229,18 +231,23 @@ cargo run --example multi_jobs_with_ui
 # Two workers polling different logical queues (emails + reports)
 cargo run --example multi_workers
 
+# Reliability and timing behavior
 # Failure and retry with backoff
 cargo run --example failure_retry
 
 # Delayed jobs
 cargo run --example delayed_jobs
 
-# Axum host + nested dashboard — see README_UI.md
-cargo run --example start_ui
-# Then open http://127.0.0.1:8080/dashboard/ (see example source for path and port)
-
 # Larger enqueue/processing demo (data volume / stress-style usage)
 cargo run --example large_data_processing
+
+# Repeat schedules and pause/resume controls
+cargo run --example repeat_and_pause
+
+# Web UI and hosting
+# Axum host + nested dashboard - see README_UI.md
+cargo run --example start_ui
+# Then open http://127.0.0.1:8080/dashboard/ (see example source for path and port)
 
 # Minimal Axum binary + dashboard (`REDIS_URL` optional)
 cargo run --example web_ui

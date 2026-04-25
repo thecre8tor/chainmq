@@ -1,4 +1,4 @@
-// examples/multi_jobs_with_ui.rs
+// examples/queue_topologies/multi_jobs_with_ui.rs
 // Example showing how to integrate UI with multiple job types
 
 use std::net::SocketAddr;

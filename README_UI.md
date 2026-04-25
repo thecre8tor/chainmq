@@ -89,7 +89,7 @@ async fn main() -> std::io::Result<()> {
 
 If [`WebUIMountConfig::ui_path`](https://docs.rs/chainmq/latest/chainmq/struct.WebUIMountConfig.html) is `"/"`, **merge** the router at the root of your app instead of nesting (avoid path clashes with your other routes).
 
-For a runnable example, see [`examples/web_ui.rs`](./examples/web_ui.rs).
+For a runnable example, see [`examples/web_ui/web_ui.rs`](./examples/web_ui/web_ui.rs).
 
 ### Repeat schedules, process repeat, and queue pause
 
@@ -130,7 +130,7 @@ Redis-backed **tracing** log lines for the optional `GET …/jobs/{id}/logs` API
 
 **Default:** workers do **not** install a global subscriber or `job_logs_layer`. Use queue/stream events and the **Activity** tab first.
 
-**Enable Redis job logs:** call **`WorkerBuilder::with_tracing_job_logs(true)`** (or set **`WorkerConfig::tracing_job_logs`**) so that, when the process still has no global `tracing` subscriber at worker creation, ChainMQ installs `EnvFilter` (from `RUST_LOG`, else `info`), stdout formatting, and **`job_logs_layer`** for that worker’s queue. See [`examples/worker_main.rs`](./examples/worker_main.rs).
+**Enable Redis job logs:** call **`WorkerBuilder::with_tracing_job_logs(true)`** (or set **`WorkerConfig::tracing_job_logs`**) so that, when the process still has no global `tracing` subscriber at worker creation, ChainMQ installs `EnvFilter` (from `RUST_LOG`, else `info`), stdout formatting, and **`job_logs_layer`** for that worker’s queue. See [`examples/getting_started/worker_main.rs`](./examples/getting_started/worker_main.rs).
 
 **Custom subscriber:** if you call `tracing_subscriber::…::init()` **before** `WorkerBuilder::spawn`, you must add **`chainmq::job_logs_layer`** yourself and pass the same **`Arc<Queue>`** via **`WorkerBuilder::with_shared_queue`**, so the layer and the worker share one queue handle.
 

@@ -1,4 +1,4 @@
-// examples/repeat_and_pause.rs
+// examples/schedulers/repeat_and_pause.rs
 //
 // End-to-end demo: interval + cron repeatables, `process_repeat`, queue pause/resume,
 // a real [`Worker`] (shared [`Queue`], fast poll intervals), optional Axum dashboard, and cleanup.

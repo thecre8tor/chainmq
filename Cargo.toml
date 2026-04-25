@@ -99,3 +99,47 @@ web-ui-axum = [
     "dep:tower-http",
 ]
 web-ui-actix = ["web-ui-core", "dep:actix-web", "dep:actix-session"]
+
+[[example]]
+name = "worker_main"
+path = "examples/getting_started/worker_main.rs"
+
+[[example]]
+name = "enqueue_email"
+path = "examples/getting_started/enqueue_email.rs"
+
+[[example]]
+name = "multi_jobs_single_worker"
+path = "examples/queue_topologies/multi_jobs_single_worker.rs"
+
+[[example]]
+name = "multi_jobs_with_ui"
+path = "examples/queue_topologies/multi_jobs_with_ui.rs"
+
+[[example]]
+name = "multi_workers"
+path = "examples/queue_topologies/multi_workers.rs"
+
+[[example]]
+name = "failure_retry"
+path = "examples/reliability/failure_retry.rs"
+
+[[example]]
+name = "delayed_jobs"
+path = "examples/reliability/delayed_jobs.rs"
+
+[[example]]
+name = "large_data_processing"
+path = "examples/reliability/large_data_processing.rs"
+
+[[example]]
+name = "repeat_and_pause"
+path = "examples/schedulers/repeat_and_pause.rs"
+
+[[example]]
+name = "start_ui"
+path = "examples/web_ui/start_ui.rs"
+
+[[example]]
+name = "web_ui"
+path = "examples/web_ui/web_ui.rs"

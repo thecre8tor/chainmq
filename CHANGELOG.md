@@ -16,7 +16,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 - `**JobId`:** now wraps any non-empty string (serde transparent JSON string); auto-generated ids are still UUID strings. Queue operations (`claim_job`, `list_jobs`, `recover_stalled_jobs`, delayed promotion), dashboard job routes, and the job-log tracing layer accept arbitrary string ids. `**JobOptions::job_id`** documents custom string ids.
 - **Web UI (`ui/app.js`):** activity “Logged at” / schedule copy, job list created/execute/start times, lifecycle milestone labels, and related helpers display **fractional seconds** (three-digit milliseconds) via `Intl` / `toLocaleString` options.
-- `**examples/enqueue_email.rs`:** no longer calls `complete_job` immediately after enqueueing a delayed job (that path skipped `delay_secs` and `perform`); added a short note to run a worker for real delayed execution.
+- `**examples/getting_started/enqueue_email.rs`:** no longer calls `complete_job` immediately after enqueueing a delayed job (that path skipped `delay_secs` and `perform`); added a short note to run a worker for real delayed execution.
 
 ## [1.3.0] - 2026-04-23
 
