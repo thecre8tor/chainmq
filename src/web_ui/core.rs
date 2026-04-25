@@ -1,6 +1,6 @@
 //! Shared dashboard types, static assets, path helpers, and queue JSON handlers.
 
-use crate::{JobOptions, JobRegistry, JobState, Queue, RepeatCatchUp};
+use crate::{JobOptions, JobState, Queue, RepeatCatchUp};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -15,6 +15,12 @@ pub const SESSION_AUTH_KEY: &str = "chainmq_ui_authenticated";
 /// Fixed 64-byte development signing key when [`WebUIMountConfig::session_secret`] is `None`.
 pub const DEFAULT_WEB_UI_SESSION_SECRET: &[u8; 64] =
     b"chainmq-web-ui-DEV-SESSION-KEY-64B-DO-NOT-USE-IN-PRODUCTION!!!!!";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionSecretMaterial {
+    Bytes32([u8; 32]),
+    Bytes64([u8; 64]),
+}
 
 #[derive(Clone)]
 pub struct UiLoginRuntime {
@@ -121,13 +127,13 @@ pub struct WebUIMountConfig {
     pub ui_path: String,
     /// When `Some`, the dashboard requires login (HttpOnly session cookie).
     pub auth: Option<WebUIAuth>,
-    /// Master key (64 bytes) used to sign the session cookie. If `None` while [`Self::auth`] is
-    /// `Some`, a **fixed development key** is used.
-    pub session_secret: Option<[u8; 64]>,
+    /// Master key used to sign the session cookie.
+    ///
+    /// Accepts exactly `32` bytes (expanded by cookie key derivation) or `64` bytes (used directly).
+    /// If `None` while [`Self::auth`] is `Some`, a **fixed development key** is used.
+    pub session_secret: Option<Vec<u8>>,
     /// `Secure` flag on the session cookie (use `true` behind HTTPS).
     pub cookie_secure: bool,
-    /// When `Some`, repeat promotion and “add repeat” APIs can materialize jobs by type name.
-    pub job_registry: Option<Arc<JobRegistry>>,
 }
 
 impl Default for WebUIMountConfig {
@@ -137,22 +143,43 @@ impl Default for WebUIMountConfig {
             auth: Some(WebUIAuth::default()),
             session_secret: None,
             cookie_secure: false,
-            job_registry: None,
         }
     }
 }
 
-/// Returns signing key material for cookie sessions.
-pub fn session_signing_key_material(config: &WebUIMountConfig) -> [u8; 64] {
+/// Returns validated session-secret material for cookie sessions.
+pub fn session_signing_key_material(
+    config: &WebUIMountConfig,
+) -> std::io::Result<SessionSecretMaterial> {
     match &config.session_secret {
-        Some(k) => *k,
+        Some(k) => {
+            if k.len() == 64 {
+                let mut out = [0u8; 64];
+                out.copy_from_slice(&k[..64]);
+                return Ok(SessionSecretMaterial::Bytes64(out));
+            }
+            if k.len() == 32 {
+                let mut out = [0u8; 32];
+                out.copy_from_slice(&k[..32]);
+                return Ok(SessionSecretMaterial::Bytes32(out));
+            }
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "WebUIMountConfig.session_secret must be 32 or 64 bytes; got {}",
+                    k.len()
+                ),
+            ))
+        }
         None => {
             if config.auth.is_some() {
                 tracing::warn!(
                     "[web-ui] Using built-in development session signing key; set WebUIMountConfig.session_secret in production"
                 );
             }
-            *DEFAULT_WEB_UI_SESSION_SECRET
+            Ok(SessionSecretMaterial::Bytes64(
+                *DEFAULT_WEB_UI_SESSION_SECRET,
+            ))
         }
     }
 }
@@ -774,17 +801,8 @@ pub async fn api_remove_repeat(
 pub async fn api_process_repeat(
     queue: &Queue,
     queue_name: &str,
-    registry: Option<&JobRegistry>,
 ) -> (http::StatusCode, serde_json::Value) {
-    let Some(reg) = registry else {
-        return (
-            http::StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::json!({
-                "error": "WebUIMountConfig.job_registry is not set; cannot process repeat jobs from the dashboard."
-            }),
-        );
-    };
-    match queue.process_repeat(queue_name, reg).await {
+    match queue.process_repeat(queue_name).await {
         Ok(n) => (
             http::StatusCode::OK,
             serde_json::json!({

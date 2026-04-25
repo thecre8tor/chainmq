@@ -1,8 +1,7 @@
 use crate::redis::RedisClient;
 // src/queue.rs
 use crate::{
-    ChainMQError, Job, JobId, JobLogLine, JobMetadata, JobOptions, JobRegistry, JobState, Priority,
-    Result,
+    ChainMQError, Job, JobId, JobLogLine, JobMetadata, JobOptions, JobState, Priority, Result,
     lua::LuaScripts,
     repeat::{RepeatCatchUp, RepeatScheduleInfo},
 };
@@ -39,7 +38,7 @@ impl Default for QueueOptions {
         Self {
             name: "default".to_string(),
             redis: RedisClient::Url("redis://127.0.0.1:6379".into()),
-            key_prefix: "rbq".to_string(),
+            key_prefix: "chain".to_string(),
             default_concurrency: 10,
             max_stalled_interval: 30000, // 30 seconds
             job_logs_max_lines: 500,
@@ -458,6 +457,92 @@ impl Queue {
         Ok(job_id)
     }
 
+    async fn enqueue_serialized_job(
+        &self,
+        queue_name: &str,
+        job_name: String,
+        payload: serde_json::Value,
+        options: JobOptions,
+    ) -> Result<JobId> {
+        let job_id = options.job_id.clone().unwrap_or_else(JobId::new);
+        if job_id.0.is_empty() {
+            return Err(ChainMQError::InvalidJobId(
+                "job id must not be empty".into(),
+            ));
+        }
+        let now = Utc::now();
+
+        let mut stored_options = options.clone();
+        stored_options.job_id = None;
+
+        let metadata = JobMetadata {
+            id: job_id.clone(),
+            name: job_name,
+            queue_name: queue_name.to_string(),
+            payload,
+            options: stored_options,
+            state: if options.delay_secs.is_some() {
+                JobState::Delayed
+            } else {
+                JobState::Waiting
+            },
+            attempts: 0,
+            created_at: now,
+            started_at: None,
+            completed_at: None,
+            failed_at: None,
+            last_error: None,
+            worker_id: None,
+            response: None,
+            progress: None,
+        };
+
+        let mut conn = self.async_conn.clone();
+        let job_key = self.job_key(&job_id);
+        let metadata_json = serde_json::to_string(&metadata)?;
+        let inserted: bool = conn
+            .hset_nx(&job_key, "metadata", &metadata_json)
+            .await
+            .map_err(ChainMQError::Redis)?;
+        if !inserted {
+            return Err(ChainMQError::DuplicateJobId(job_id));
+        }
+
+        self.save_job_metadata(&job_id, &metadata).await?;
+
+        let registry_key = self.queues_registry_key();
+        let _: () = conn
+            .sadd::<_, _, ()>(&registry_key, queue_name)
+            .await
+            .map_err(ChainMQError::Redis)?;
+
+        if let Some(delay_secs) = options.delay_secs {
+            let execute_at = now.timestamp() + delay_secs as i64;
+            let delayed_key = self.delayed_key(queue_name);
+            let _: () = conn
+                .zadd::<_, _, _, ()>(&delayed_key, job_id.to_string(), execute_at)
+                .await
+                .map_err(ChainMQError::Redis)?;
+            self.emit_queue_event(
+                queue_name,
+                "delayed",
+                Some(&job_id),
+                Some(serde_json::json!({ "executeAt": execute_at })),
+                None,
+            )
+            .await;
+        } else {
+            let disc = metadata.options.priority.redis_discriminant();
+            let lifo = metadata.options.lifo;
+            self.push_job_to_wait(&mut conn, queue_name, &job_id.to_string(), disc, lifo)
+                .await?;
+            self.emit_queue_event(queue_name, "waiting", Some(&job_id), None, None)
+                .await;
+        }
+
+        Ok(job_id)
+    }
+
     /// Get job by ID (single `metadata` JSON field — source of truth)
     pub async fn get_job(&self, job_id: &JobId) -> Result<Option<JobMetadata>> {
         let mut conn = self.async_conn.clone();
@@ -722,8 +807,8 @@ impl Queue {
         Ok(out)
     }
 
-    /// Promote due interval repeat ticks (Lua) and due cron ticks (Rust), then materialize jobs via `registry`.
-    pub async fn process_repeat(&self, queue_name: &str, registry: &JobRegistry) -> Result<usize> {
+    /// Promote due interval repeat ticks (Lua) and due cron ticks (Rust), then materialize jobs.
+    pub async fn process_repeat(&self, queue_name: &str) -> Result<usize> {
         if self.is_queue_paused(queue_name).await? {
             return Ok(0);
         }
@@ -754,22 +839,19 @@ impl Queue {
                 continue;
             }
             if let Ok(c) = self
-                .materialize_repeat_line(queue_name, registry, schedule_id, fire_unix)
+                .materialize_repeat_line(queue_name, schedule_id, fire_unix)
                 .await
             {
                 count += c;
             }
         }
-        count += self
-            .process_repeat_cron_due(queue_name, registry, now)
-            .await?;
+        count += self.process_repeat_cron_due(queue_name, now).await?;
         Ok(count)
     }
 
     async fn materialize_repeat_line(
         &self,
         queue_name: &str,
-        registry: &JobRegistry,
         schedule_id: &str,
         fire_unix: i64,
     ) -> Result<usize> {
@@ -815,7 +897,10 @@ impl Queue {
             .transpose()
             .map_err(ChainMQError::Serialization)?
             .unwrap_or_default();
-        match registry.enqueue_by_name(self, &jn, payload, opts).await {
+        match self
+            .enqueue_serialized_job(queue_name, jn.to_string(), payload, opts)
+            .await
+        {
             Ok(jid) => {
                 self.emit_queue_event(
                     queue_name,
@@ -834,12 +919,7 @@ impl Queue {
         }
     }
 
-    async fn process_repeat_cron_due(
-        &self,
-        queue_name: &str,
-        registry: &JobRegistry,
-        now: i64,
-    ) -> Result<usize> {
+    async fn process_repeat_cron_due(&self, queue_name: &str, now: i64) -> Result<usize> {
         let repeat_key = self.repeat_zset_key(queue_name);
         let mut conn = self.async_conn.clone();
         let raw: Vec<String> = redis::cmd("ZRANGEBYSCORE")
@@ -905,7 +985,7 @@ impl Queue {
                 .await
                 .map_err(ChainMQError::Redis)?;
             if self
-                .materialize_repeat_line(queue_name, registry, &schedule_id, fire_unix)
+                .materialize_repeat_line(queue_name, &schedule_id, fire_unix)
                 .await?
                 == 1
             {

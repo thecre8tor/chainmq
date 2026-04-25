@@ -464,7 +464,6 @@ impl Worker {
 
     async fn spawn_repeat_processor(&self) -> JoinHandle<()> {
         let queue = Arc::clone(&self.queue);
-        let registry = Arc::clone(&self.registry);
         let queue_name = self.config.queue_options.name.clone();
         let poll = self.config.repeat_poll_interval;
         let is_shutting_down = Arc::clone(&self.is_shutting_down);
@@ -480,7 +479,7 @@ impl Worker {
 
                 interval.tick().await;
 
-                match queue.process_repeat(&queue_name, registry.as_ref()).await {
+                match queue.process_repeat(&queue_name).await {
                     Ok(n) => {
                         if n > 0 {
                             info!("Promoted {} repeat tick(s)", n);

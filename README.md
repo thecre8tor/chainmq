@@ -38,13 +38,13 @@ Add ChainMQ to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-chainmq = "1.3.1"
+chainmq = "1.3.2"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 async-trait = "0.1"
 ```
 
-The crate enables the **`web-ui`** feature by default (Axum dashboard router you nest on your server). For a smaller dependency tree, use `chainmq = { version = "1.1.2", default-features = false }`. Add `features = ["web-ui"]` or `["web-ui-axum"]` / `["web-ui-actix"]` when you want the dashboard. See [README_UI.md](./README_UI.md) for setup, log capture, and [`WebUIMountConfig`](./README_UI.md#webuimountconfig).
+The crate enables the **`web-ui`** feature by default (Axum dashboard router you nest on your server). For a smaller dependency tree, use `chainmq = { version = "1.3.2", default-features = false }`. Add `features = ["web-ui"]` or `["web-ui-axum"]` / `["web-ui-actix"]` when you want the dashboard. See [README_UI.md](./README_UI.md) for setup, log capture, and [`WebUIMountConfig`](./README_UI.md#webuimountconfig).
 
 ## Basic Usage:
 

@@ -7,8 +7,8 @@
 //! With Redis at `REDIS_URL` or default `redis://127.0.0.1:6379`.
 use async_trait::async_trait;
 use chainmq::{
-    ChainMQError, Job, JobContext, JobId, JobLogLine, JobMetadata, JobOptions, JobRegistry,
-    JobState, Priority, Queue, QueueOptions, RedisClient, RepeatCatchUp, Result,
+    ChainMQError, Job, JobContext, JobId, JobLogLine, JobMetadata, JobOptions, JobState, Priority,
+    Queue, QueueOptions, RedisClient, RepeatCatchUp, Result,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -560,16 +560,9 @@ async fn lifecycle_events_in_stream() {
     );
 }
 
-fn test_registry() -> JobRegistry {
-    let mut reg = JobRegistry::new();
-    reg.register::<TestJob>();
-    reg
-}
-
 #[tokio::test]
 #[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
 async fn repeat_interval_process_repeat_enqueues() {
-    let reg = test_registry();
     let queue = Queue::new(opts()).await.expect("queue new");
     let sid = "repeat-int-1";
     queue
@@ -588,7 +581,7 @@ async fn repeat_interval_process_repeat_enqueues() {
         .expect("upsert repeat");
 
     let n = queue
-        .process_repeat("integration_q", &reg)
+        .process_repeat("integration_q")
         .await
         .expect("process_repeat");
     assert!(n >= 1, "expected at least one promotion");
@@ -614,7 +607,6 @@ async fn repeat_interval_process_repeat_enqueues() {
 #[tokio::test]
 #[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
 async fn repeat_interval_concurrent_process_at_most_one_job() {
-    let reg = Arc::new(test_registry());
     let queue = Arc::new(Queue::new(opts()).await.expect("queue new"));
     let sid = "repeat-int-conc";
     queue
@@ -634,12 +626,7 @@ async fn repeat_interval_concurrent_process_at_most_one_job() {
 
     let q1 = Arc::clone(&queue);
     let q2 = Arc::clone(&queue);
-    let r1 = Arc::clone(&reg);
-    let r2 = Arc::clone(&reg);
-    let (a, b) = tokio::join!(
-        q1.process_repeat("integration_q", r1.as_ref()),
-        q2.process_repeat("integration_q", r2.as_ref()),
-    );
+    let (a, b) = tokio::join!(q1.process_repeat("integration_q"), q2.process_repeat("integration_q"),);
     a.expect("p1");
     b.expect("p2");
 
@@ -666,7 +653,6 @@ async fn repeat_interval_concurrent_process_at_most_one_job() {
 #[tokio::test]
 #[ignore = "requires Redis; run: cargo test --test queue_integration -- --ignored"]
 async fn repeat_while_queue_paused_skips_materialize() {
-    let reg = test_registry();
     let queue = Queue::new(opts()).await.expect("queue new");
     queue.pause_queue("integration_q").await.expect("pause");
     let sid = "repeat-paused-1";
@@ -686,7 +672,7 @@ async fn repeat_while_queue_paused_skips_materialize() {
         .expect("upsert");
 
     let n = queue
-        .process_repeat("integration_q", &reg)
+        .process_repeat("integration_q")
         .await
         .expect("process_repeat");
     assert_eq!(n, 0);
@@ -699,7 +685,7 @@ async fn repeat_while_queue_paused_skips_materialize() {
 
     queue.resume_queue("integration_q").await.expect("resume");
     let n2 = queue
-        .process_repeat("integration_q", &reg)
+        .process_repeat("integration_q")
         .await
         .expect("process_repeat after resume");
     assert!(n2 >= 1);

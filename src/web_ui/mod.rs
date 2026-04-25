@@ -33,7 +33,6 @@ mod core_tests {
     fn default_mount_config_enables_auth_with_chainmq_credentials() {
         let c = WebUIMountConfig::default();
         assert!(c.auth.is_some());
-        assert!(c.job_registry.is_none());
         let a = c.auth.expect("auth");
         assert_eq!(a.username, "ChainMQ");
         assert_eq!(a.password, "ChainMQ");
@@ -96,6 +95,47 @@ mod core_tests {
         assert_eq!(
             embedded_asset_rel_key("/dashboard/app.js", "/dashboard").as_deref(),
             Some("app.js")
+        );
+    }
+
+    #[test]
+    fn session_secret_accepts_64_bytes_directly() {
+        let secret = vec![7u8; 64];
+        let cfg = WebUIMountConfig {
+            session_secret: Some(secret.clone()),
+            ..Default::default()
+        };
+        let material = session_signing_key_material(&cfg).expect("64-byte secret should work");
+        let SessionSecretMaterial::Bytes64(derived) = material else {
+            panic!("expected 64-byte material");
+        };
+        assert_eq!(derived.as_slice(), secret.as_slice());
+    }
+
+    #[test]
+    fn session_secret_accepts_32_bytes_via_derivation() {
+        let cfg = WebUIMountConfig {
+            session_secret: Some(vec![9u8; 32]),
+            ..Default::default()
+        };
+        let material = session_signing_key_material(&cfg).expect("32-byte secret should work");
+        let SessionSecretMaterial::Bytes32(derived) = material else {
+            panic!("expected 32-byte material");
+        };
+        assert_eq!(derived.len(), 32);
+        assert_ne!(derived, [0u8; 32]);
+    }
+
+    #[test]
+    fn session_secret_rejects_unsupported_lengths() {
+        let cfg = WebUIMountConfig {
+            session_secret: Some(vec![1u8; 48]),
+            ..Default::default()
+        };
+        let err = session_signing_key_material(&cfg).expect_err("48-byte secret must fail");
+        assert!(
+            err.to_string()
+                .contains("WebUIMountConfig.session_secret must be 32 or 64 bytes")
         );
     }
 }

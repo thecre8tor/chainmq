@@ -196,11 +196,9 @@ async fn maybe_spawn_dashboard(
     let queue_ui = Queue::new(queue_options(&redis_url))
         .await
         .map_err(|e| anyhow::anyhow!("dashboard Queue::new: {e}"))?;
-    let registry_ui = Arc::new(build_registry());
     let mount = WebUIMountConfig {
         ui_path: "/dashboard".to_string(),
         auth: None,
-        job_registry: Some(registry_ui),
         ..Default::default()
     };
     let dashboard = chainmq_dashboard_router(queue_ui, mount)
@@ -256,8 +254,6 @@ async fn main() -> anyhow::Result<()> {
     // Let the worker attach before we add schedules.
     tokio::time::sleep(Duration::from_millis(600)).await;
 
-    let materialize_reg = build_registry();
-
     println!("\n--- 1) Interval repeat: first fire now, then every 10s (catch-up: one) ---");
     queue
         .upsert_repeat_interval(
@@ -297,7 +293,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("\n--- 2) Explicit process_repeat (extra promotion pass from this process) ---");
     let extra = queue
-        .process_repeat(QUEUE_NAME, &materialize_reg)
+        .process_repeat(QUEUE_NAME)
         .await
         .map_err(|e| anyhow::anyhow!("process_repeat: {e}"))?;
     println!("  process_repeat returned {extra} new job(s) this call.");
@@ -328,7 +324,7 @@ async fn main() -> anyhow::Result<()> {
     queue.pause_queue(QUEUE_NAME).await?;
     let counter_at_pause = app.performed();
     let promoted_while_paused = queue
-        .process_repeat(QUEUE_NAME, &materialize_reg)
+        .process_repeat(QUEUE_NAME)
         .await?;
     println!(
         "  process_repeat while paused -> {promoted_while_paused} (expected 0); paused={}",
@@ -392,8 +388,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!(
         "\nTip: in your own app, use `WorkerBuilder::with_repeat_poll_interval`, \
-`Queue::process_repeat` from a cron sidecar, and `WebUIMountConfig {{ job_registry: Some(Arc::new(registry)), .. }}` \
-so the dashboard can add repeats and call process-repeat."
+`Queue::process_repeat` from a cron sidecar; dashboard process-repeat is queue-native."
     );
 
     Ok(())

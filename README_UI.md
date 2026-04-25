@@ -41,13 +41,13 @@ Smaller builds without any dashboard:
 
 ```toml
 [dependencies]
-chainmq = { version = "1.3.1", default-features = false }
+chainmq = { version = "1.3.2", default-features = false }
 ```
 
 Actix-only consumers:
 
 ```toml
-chainmq = { version = "1.3.1", default-features = false, features = ["web-ui-actix"] }
+chainmq = { version = "1.3.2", default-features = false, features = ["web-ui-actix"] }
 ```
 
 ### 2. Axum: mount the router
@@ -94,7 +94,7 @@ For a runnable example, see [`examples/web_ui.rs`](./examples/web_ui.rs).
 ### Repeat schedules, process repeat, and queue pause
 
 - **Pause / resume:** toolbar buttons call `POST …/api/queues/{queue}/pause` and `…/resume`; the UI refreshes paused state from `GET …/paused`.
-- **Process repeat:** runs `POST …/api/queues/{queue}/process-repeat`, which calls [`Queue::process_repeat`](https://docs.rs/chainmq/latest/chainmq/struct.Queue.html#method.process_repeat). That path needs a [`JobRegistry`](https://docs.rs/chainmq/latest/chainmq/struct.JobRegistry.html) to deserialize jobs by name — set [`WebUIMountConfig::job_registry`](https://docs.rs/chainmq/latest/chainmq/struct.WebUIMountConfig.html#structfield.job_registry) to `Some(Arc::new(reg))` after registering the same job types your worker uses. If it is `None`, the API returns **503** with an explanatory JSON error.
+- **Process repeat:** runs `POST …/api/queues/{queue}/process-repeat`, which calls [`Queue::process_repeat`](https://docs.rs/chainmq/latest/chainmq/struct.Queue.html#method.process_repeat). This is queue-native and does not require extra dashboard registry wiring.
 - **List / add / remove repeats:** `GET …/repeats`, `POST …/repeats/interval`, `POST …/repeats/cron`, `DELETE …/repeats/{schedule_id}` (see [`AddRepeatIntervalRequest`](https://docs.rs/chainmq/latest/chainmq/struct.AddRepeatIntervalRequest.html) / [`AddRepeatCronRequest`](https://docs.rs/chainmq/latest/chainmq/struct.AddRepeatCronRequest.html) in the crate docs). You can drive these from your own tools; the bundled UI currently exposes pause, resume, and **Process repeat** on the queue toolbar.
 
 ### 3. Actix: `configure`
@@ -149,8 +149,9 @@ pub struct WebUIMountConfig {
     pub ui_path: String,
     /// When `Some`, the dashboard requires login (HttpOnly session cookie).
     pub auth: Option<WebUIAuth>,
-    /// 64-byte signing key for session cookies; if `None` while `auth` is set, a fixed **dev-only** key is used.
-    pub session_secret: Option<[u8; 64]>,
+    /// Session signing master key: provide exactly 32 bytes (`cookie::Key::derive_from`) or 64 bytes (used directly).
+    /// If `None` while `auth` is set, a fixed **dev-only** key is used.
+    pub session_secret: Option<Vec<u8>>,
     /// Session cookie `Secure` flag (use `true` behind HTTPS).
     pub cookie_secure: bool,
 }
@@ -224,7 +225,7 @@ The UI issues `fetch` calls to `{ui_path}/api/...` with **credentials** when aut
 ## Running in production
 
 1. **Reverse proxy**: Terminate TLS in front of your Axum/Actix process.
-2. **Authentication**: Set `WebUIMountConfig.auth` with strong credentials, `session_secret: Some([u8; 64])` from a CSPRNG, and `cookie_secure: true` over HTTPS.
+2. **Authentication**: Set `WebUIMountConfig.auth` with strong credentials, `session_secret: Some(secret_bytes)` where `secret_bytes.len()` is `32` or `64` from a CSPRNG, and `cookie_secure: true` over HTTPS.
 3. **Static assets**: Shipped inside the `chainmq` binary; customize in a fork by editing `ui/` and rebuilding.
 
 ## Troubleshooting

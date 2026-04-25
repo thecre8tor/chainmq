@@ -2578,7 +2578,7 @@ async function processRepeat() {
   if (!currentQueue) return;
   if (
     !confirm(
-      `Process repeat schedules for ${currentQueue}? Requires the server to set WebUIMountConfig.job_registry.`,
+      `Process repeat schedules for ${currentQueue}?`,
     )
   ) {
     return;

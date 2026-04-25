@@ -22,11 +22,11 @@ fn map_http_status(s: http::StatusCode) -> actix_web::http::StatusCode {
 }
 use tokio::sync::Mutex;
 
-use crate::{JobRegistry, Queue};
+use crate::Queue;
 
 use super::core::{
     self, AddRepeatCronRequest, AddRepeatIntervalRequest, CleanQueueRequest, DeleteJobRequest,
-    JobLogsQuery, LoginRequest, SESSION_AUTH_KEY, UiAssets, WebUIMountConfig,
+    JobLogsQuery, LoginRequest, SESSION_AUTH_KEY, SessionSecretMaterial, UiAssets, WebUIMountConfig,
     embedded_asset_rel_key, embedded_content_type, is_ui_auth_public_route, json_reauth_value,
     normalize_static_url_prefix, session_cookie_path, session_signing_key_material,
     verify_credentials,
@@ -36,7 +36,6 @@ use super::core::{
 struct AppState {
     queue: Arc<Mutex<Queue>>,
     auth: Option<Arc<core::UiLoginRuntime>>,
-    job_registry: Option<Arc<JobRegistry>>,
 }
 
 /// Register dashboard routes on `cfg`. Call this from `App::configure`.
@@ -73,10 +72,12 @@ pub fn configure_chainmq_web_ui(
     let app_state = AppState {
         queue,
         auth,
-        job_registry: config.job_registry.clone(),
     };
 
-    let session_key = Key::from(&session_signing_key_material(&config)[..]);
+    let session_key = match session_signing_key_material(&config)? {
+        SessionSecretMaterial::Bytes32(secret_32) => Key::derive_from(&secret_32),
+        SessionSecretMaterial::Bytes64(secret_64) => Key::from(&secret_64),
+    };
     let cookie_path = session_cookie_path(&config.ui_path);
     let cookie_secure = config.cookie_secure;
 
@@ -481,8 +482,7 @@ async fn process_repeat_actix(
 ) -> ActixResult<HttpResponse> {
     let queue_name = path.into_inner();
     let q = state.queue.lock().await;
-    let reg = state.job_registry.as_deref();
-    let (st, json) = core::api_process_repeat(&*q, &queue_name, reg).await;
+    let (st, json) = core::api_process_repeat(&*q, &queue_name).await;
     Ok(HttpResponse::build(map_http_status(st)).json(json))
 }
 
